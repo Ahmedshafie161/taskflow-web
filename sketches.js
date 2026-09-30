@@ -54,6 +54,8 @@
   const undoStack = [];
   const redoStack = [];
   let currentStroke = null;
+  let pageBodyEditor = null;
+  let pageBodySaveTimer = null;
   let imageLayout = { scale: 1, x: 0, y: 0, bounds: { minX: 0, minY: 0 } };
   let lastSaveError = '';
 
@@ -215,6 +217,7 @@
 
   function drawElement(el, imagesOnly = false) {
     const kind = el._kind;
+    if (el.isPageBody && pageBodyEditor?.boardId === selectedBoard?.id && pageBodyEditor.node.isConnected) return;
     const ink = color(el.colorArgb);
     const width = Math.max(1, Number(el.strokeWidth) || 2);
     ctx.strokeStyle = ink;
@@ -334,6 +337,7 @@
     const x = Math.max(30, (rect.width - worldW * scale) / 2), y = Math.max(30, (rect.height - worldH * scale) / 2);
     imageLayout = { scale, x, y, bounds: b };
     const zoomLabel = $('#zoom-label'); if (zoomLabel) zoomLabel.textContent = `${Math.round(zoomFactor * 100)}%`;
+    positionPageBodyEditor();
     if (!elements.length && !drawing) return;
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (x - b.minX * scale), dpr * (y - b.minY * scale));
     const treeNodes = new Map(elements.filter((element) => element._kind === 'treenode').map((element) => [element.id, element]));
@@ -370,29 +374,7 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
-  function showLinks() {
-    let links = $('#sketch-links');
-    if (!links) {
-      links = document.createElement('div'); links.id = 'sketch-links'; links.className = 'sketch-links';
-      $('.editor-panel').insertBefore(links, $('.sketch-canvas-tools'));
-    }
-    const items = elements.filter((e) => (e._kind === 'textbox' && e.linkUrl) || e._kind === 'image');
-    if (!items.length) { links.replaceChildren(); return; }
-    links.innerHTML = items.map((e) => {
-      const imageSource = String(e.uriString || e.imageUrl || '');
-      const mediaKey = imageSource.startsWith('firestore-media://') ? imageSource.slice('firestore-media://'.length) : imageSource;
-      const loaded = e._kind === 'image' ? loadedImages.get(mediaKey) : null;
-      const hrefValue = e.linkUrl || (loaded?.kind === 'document' ? loaded.src : (e._kind === 'image' && /^https?:\/\//i.test(imageSource) ? imageSource : ''));
-      const href = /^https?:\/\//i.test(hrefValue) ? ` href="${escapeHtml(hrefValue)}" target="_blank" rel="noopener noreferrer"` : '';
-      const title = e._kind === 'image' ? (e.mediaName || `Image ${e.id}`) : (e.text || 'Open linked media');
-      const mimeType = mediaMime(e);
-      const preview = loaded && loaded !== 'loading' && (loaded instanceof HTMLVideoElement || mimeType === 'image/gif' || mimeType === 'image/webp')
-        ? loaded instanceof HTMLVideoElement
-          ? `<video class="sketch-media-preview" controls preload="metadata" playsinline src="${escapeHtml(loaded.src)}"></video>`
-          : `<img class="sketch-media-preview" src="${escapeHtml(loaded.src)}" alt="">` : '';
-      return `<a class="sketch-link"${href}><span>${e._kind === 'image' ? '▧' : '▶'}</span>${escapeHtml(title)}${preview}</a>`;
-    }).join('');
-  }
+  function showLinks() { $('#sketch-links')?.remove(); }
 
   function buildTree() {
     const pageCount = boards.filter((board) => !board.isSection).length;
@@ -432,8 +414,30 @@
     boardTree.innerHTML = rows.join('');
   }
 
+  function isPageBody(element) { return element?._kind === 'textbox' && Boolean(element.isPageBody); }
+
+  function pageBodyDraft(state = pageBodyEditor) {
+    if (!state) return null;
+    const text = state.node?.isConnected ? state.node.innerText.replace(/\r\n?/g, '\n') : state.text;
+    state.text = text;
+    const item = { ...state.item, _kind: 'textbox', isPageBody: true, text };
+    if (state.node?.isConnected) item.h = Math.max(120, state.node.getBoundingClientRect().height / zoomFactor);
+    state.item = item;
+    return item;
+  }
+
   function setElements(next) {
-    elements = next.map(parseElement).filter(Boolean).sort((a, b) => a.id - b.id);
+    const incoming = next.map(parseElement).filter(Boolean);
+    if (pageBodyEditor?.boardId === selectedBoard?.id) {
+      const draft = pageBodyDraft();
+      const index = incoming.findIndex(isPageBody);
+      if (index >= 0) {
+        draft.id = incoming[index].id;
+        pageBodyEditor.item = { ...incoming[index], ...draft };
+        incoming[index] = pageBodyEditor.item;
+      } else if (draft.text || draft.id) incoming.push(draft);
+    }
+    elements = incoming.sort((a, b) => a.id - b.id);
     if (selectedBoard) selectedBoard.elementCount = elements.length;
     $('#selected-board-meta').textContent = `${elements.length} elements · ${selectedBoard?.sourceSection || selectedBoard?.sourceNotebook || 'Firebase'}`;
     showLinks(); renderCanvas(); buildTree();
@@ -455,6 +459,7 @@
   }
 
   function selectBoard(board) {
+    closePageBodyEditor();
     if (boardListener) boardListener();
     if (contentListener) contentListener();
     selectedBoard = board;
@@ -575,66 +580,176 @@
     };
   }
 
-  function startTextEditor(worldPoint, existing = null, initialText = '') {
-    if (!selectedBoard) return;
-    const area = $('.sketch-drawing-area');
-    const canvasRect = canvas.getBoundingClientRect();
-    const areaRect = area.getBoundingClientRect();
-    const box = existing ? elementBounds(existing) : { x: worldPoint.x, y: worldPoint.y, w: 400, h: 100 };
-    const editor = document.createElement('textarea');
-    editor.className = 'canvas-text-editor';
-    editor.setAttribute('aria-label', 'Write on sketch page');
-    editor.value = existing?.text || initialText;
-    const family = existing?.fontFamily || $('#board-font-family').value || 'Arial';
-    const size = Number(existing?.fontSize || $('#board-font-size').value) || 20;
-    editor.style.left = `${canvasRect.left - areaRect.left + imageLayout.x + (box.x - imageLayout.bounds.minX) * imageLayout.scale}px`;
-    editor.style.top = `${canvasRect.top - areaRect.top + imageLayout.y + (box.y - imageLayout.bounds.minY) * imageLayout.scale}px`;
-    editor.style.width = `${Math.max(180, Math.min(540, box.w * imageLayout.scale))}px`;
-    editor.style.height = `${Math.max(48, Math.min(300, box.h * imageLayout.scale))}px`;
-    editor.style.fontFamily = family;
-    editor.style.fontSize = `${Math.max(15, size * imageLayout.scale)}px`;
-    editor.style.color = existing ? color(existing.colorArgb) : color(activeColor);
-    area.append(editor);
-    let committed = false;
-    const close = () => {
-      if (editor.isConnected) editor.remove();
-      if (!$('.canvas-text-editor')) canvas.focus({ preventScroll: true });
-    };
-    const commit = async () => {
-      if (committed) return;
-      committed = true;
-      const value = editor.value.trim();
-      if (!value) { close(); return; }
-      const width = Math.max(180, Math.min(1100, editor.offsetWidth / imageLayout.scale));
-      const height = Math.max(size + 20, Math.min(700, editor.offsetHeight / imageLayout.scale));
-      const item = {
-        ...(existing || {}),
-        type: existing?.type || 'com.impactyn.taskmanager.data.entities.SketchElement.TextBox',
-        kind: 'textbox', _kind: 'textbox',
-        x: box.x, y: box.y, w: width, h: height, text: value,
-        fontSize: size, fontFamily: family,
-        colorArgb: existing?.colorArgb ?? activeColor, borderWidth: existing?.borderWidth || 0
-      };
-      close();
-      if (existing) {
-        const before = elements.map(cloneElement);
-        elements = elements.map((el) => el.id === existing.id ? item : el);
-        try {
-          recordUndo(before);
-          const record = { ...item }; delete record._kind;
-          await boardsRef.doc(selectedBoard.id).collection('elements').doc(String(item.id)).set({ elementJson: JSON.stringify(record), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
-          $('#save-state').textContent = 'Saved to shared Firebase';
-          renderCanvas();
-        } catch (error) { elements = before; renderCanvas(); notice(`Could not update text: ${error.message}`); }
-      } else saveElement(item);
-    };
-    editor.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') { event.preventDefault(); committed = true; close(); }
-      else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); commit(); }
+  function positionPageBodyEditor() {
+    const state = pageBodyEditor;
+    if (!state?.node.isConnected || state.boardId !== selectedBoard?.id) return;
+    const box = state.item;
+    state.node.style.left = `${canvas.offsetLeft + imageLayout.x + (box.x - imageLayout.bounds.minX) * imageLayout.scale}px`;
+    state.node.style.top = `${canvas.offsetTop + imageLayout.y + (box.y - imageLayout.bounds.minY) * imageLayout.scale}px`;
+    state.node.style.width = `${Math.max(240, box.w * imageLayout.scale)}px`;
+    state.node.style.minHeight = `${Math.max(120, box.h * imageLayout.scale)}px`;
+    state.node.style.fontFamily = box.fontFamily || 'Arial';
+    state.node.style.fontSize = `${Math.max(12, (Number(box.fontSize) || 20) * imageLayout.scale)}px`;
+    state.node.style.lineHeight = `${((Number(box.fontSize) || 20) + 4) * imageLayout.scale}px`;
+    state.node.style.color = color(box.colorArgb);
+  }
+
+  function caretAtEnd(node) {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection.removeAllRanges(); selection.addRange(range);
+  }
+
+  function caretAtPoint(node, clientX, clientY) {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return caretAtEnd(node);
+    let range = null;
+    const position = document.caretPositionFromPoint?.(clientX, clientY);
+    if (position && node.contains(position.offsetNode)) {
+      range = document.createRange();
+      range.setStart(position.offsetNode, position.offset);
+      range.collapse(true);
+    } else {
+      const found = document.caretRangeFromPoint?.(clientX, clientY);
+      if (found && node.contains(found.startContainer)) range = found;
+    }
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    if (range) selection.addRange(range); else caretAtEnd(node);
+  }
+
+  function updateLocalPageBody(state, render = true) {
+    const item = pageBodyDraft(state);
+    const index = elements.findIndex(isPageBody);
+    if (index >= 0) elements.splice(index, 1);
+    if (item.text || item.id) elements.push(item);
+    elements.sort((a, b) => a.id - b.id);
+    if (selectedBoard?.id === state.boardId) {
+      selectedBoard.elementCount = elements.length;
+      $('#selected-board-meta').textContent = `${elements.length} elements · ${selectedBoard.sourceSection || selectedBoard.sourceNotebook || 'Firebase'}`;
+      if (render) renderCanvas();
+    }
+  }
+
+  function queuePageBodySave(state, immediate = false) {
+    clearTimeout(pageBodySaveTimer);
+    if (immediate) { void persistPageBody(state); return; }
+    pageBodySaveTimer = setTimeout(() => persistPageBody(state), 650);
+  }
+
+  function persistPageBody(state) {
+    state.savePromise = (state.savePromise || Promise.resolve()).catch(() => {}).then(async () => {
+      const draft = pageBodyDraft(state);
+      if (!draft.text.trim() && !draft.id) return;
+      if (draft.id && draft.text === state.lastSavedText) return;
+      const item = { ...draft }; delete item._kind;
+      const collection = boardsRef.doc(state.boardId).collection('elements');
+      if (Number(item.id) > 0) {
+        await collection.doc(String(item.id)).set({ elementJson: JSON.stringify(item), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+      } else {
+        const contentRef = boardsRef.doc(state.boardId).collection('content').doc('elements');
+        await db.runTransaction(async (transaction) => {
+          const snap = await transaction.get(contentRef);
+          const nextId = Math.max(
+            selectedBoard?.id === state.boardId ? elements.reduce((max, el) => Math.max(max, Number(el.id) + 1), 1) : 1,
+            Number(snap.get('nextElementId')) || 1
+          );
+          item.id = nextId;
+          transaction.set(collection.doc(String(nextId)), { elementJson: JSON.stringify(item), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+          transaction.set(contentRef, { nextElementId: nextId + 1, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+        });
+        state.item.id = item.id;
+      }
+      state.item = { ...item, _kind: 'textbox' };
+      state.lastSavedText = item.text;
+      if (selectedBoard?.id === state.boardId) updateLocalPageBody(state);
+      $('#save-state').textContent = 'Saved to shared Firebase';
+    }).catch((error) => {
+      lastSaveError = error.message;
+      $('#save-state').textContent = 'Save failed';
+      notice(`Could not save page text: ${error.message}`);
     });
-    editor.addEventListener('blur', commit, { once: true });
-    editor.focus({ preventScroll: true });
-    if (initialText) editor.setSelectionRange(initialText.length, initialText.length);
+    return state.savePromise;
+  }
+
+  function closePageBodyEditor(state = pageBodyEditor) {
+    if (!state) return;
+    clearTimeout(pageBodySaveTimer);
+    pageBodyDraft(state);
+    if (pageBodyEditor === state) pageBodyEditor = null;
+    state.node.remove();
+    updateLocalPageBody(state);
+    void persistPageBody(state);
+    if (!$('.page-body-editor')) canvas.focus({ preventScroll: true });
+  }
+
+  function startPageBodyEditor(worldPoint, initialText = '', options = {}) {
+    if (!selectedBoard) return;
+    let state = pageBodyEditor;
+    if (!state || state.boardId !== selectedBoard.id || !state.node.isConnected) {
+      const existing = elements.find(isPageBody);
+      const area = $('.sketch-drawing-area');
+      const text = String(existing?.text || '');
+      const item = existing ? { ...existing } : {
+        type: 'com.impactyn.taskmanager.data.entities.SketchElement.TextBox', kind: 'textbox', _kind: 'textbox',
+        id: 0, isPageBody: true, x: 0, y: 0,
+        w: Math.max(320, Math.min(1600, (area.clientWidth - 72) / zoomFactor)), h: 160,
+        fontSize: Number($('#board-font-size').value) || 20,
+        fontFamily: $('#board-font-family').value || 'Arial', colorArgb: activeColor, borderWidth: 0
+      };
+      state = { boardId: selectedBoard.id, item, text, lastSavedText: existing?.text || '', savePromise: Promise.resolve() };
+      const editor = document.createElement('div');
+      editor.className = 'page-body-editor';
+      editor.contentEditable = 'plaintext-only';
+      editor.setAttribute('role', 'textbox');
+      editor.setAttribute('aria-label', 'Notebook page text');
+      editor.setAttribute('aria-multiline', 'true');
+      editor.dataset.placeholder = 'Click anywhere and keep typing…';
+      editor.spellcheck = true;
+      editor.textContent = text;
+      state.node = editor;
+      pageBodyEditor = state;
+      area.append(editor);
+      positionPageBodyEditor();
+      editor.addEventListener('input', () => {
+        state.text = editor.innerText.replace(/\r\n?/g, '\n');
+        updateLocalPageBody(state);
+        queuePageBodySave(state);
+      });
+      editor.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') { event.preventDefault(); closePageBodyEditor(state); }
+        else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); closePageBodyEditor(state); }
+      });
+      editor.addEventListener('blur', () => {
+        if (pageBodyEditor === state) closePageBodyEditor(state);
+      }, { once: true });
+      editor.addEventListener('paste', (event) => {
+        const plain = event.clipboardData?.getData('text/plain');
+        if (plain == null) return;
+        event.preventDefault();
+        document.execCommand('insertText', false, plain);
+      });
+    }
+
+    if (initialText) {
+      state.node.focus({ preventScroll: true });
+      if (options.insertText) {
+        if (Number.isFinite(options.clientX) && Number.isFinite(options.clientY)) caretAtPoint(state.node, options.clientX, options.clientY);
+        else caretAtEnd(state.node);
+        document.execCommand('insertText', false, initialText);
+      } else if (options.append && state.node.textContent) {
+        state.node.append(document.createTextNode(`${state.node.textContent.endsWith('\n') ? '' : '\n'}${initialText}`));
+      } else if (!state.node.textContent) state.node.textContent = initialText;
+      state.text = state.node.innerText.replace(/\r\n?/g, '\n');
+      caretAtEnd(state.node);
+      updateLocalPageBody(state);
+      queuePageBodySave(state);
+    } else {
+      state.node.focus({ preventScroll: true });
+      if (Number.isFinite(options.clientX) && Number.isFinite(options.clientY)) caretAtPoint(state.node, options.clientX, options.clientY);
+    }
+    positionPageBodyEditor();
   }
 
   canvas.addEventListener('pointerdown', (event) => {
@@ -642,8 +757,7 @@
     const p = point(event);
     if (activeTool === 'TEXT') {
       event.preventDefault();
-      $('.canvas-text-editor')?.blur();
-      startTextEditor(p);
+      startPageBodyEditor(p, '', { clientX: event.clientX, clientY: event.clientY });
       return;
     }
     canvas.focus({ preventScroll: true });
@@ -651,13 +765,12 @@
     if(activeTool==='TREE'){const selected=elements.find(el=>selection.has(el.id)&&el._kind==='treenode');const id=elements.reduce((m,el)=>Math.max(m,el.id+1),1);const node={_kind:'treenode',type:'com.impactyn.taskmanager.data.entities.SketchElement.TreeNode',id,parentId:selected?.id??null,x:p.x,y:p.y,w:180,h:68,text:selected?'Decision':'Root decision',colorArgb:activeColor,orientation:'VERTICAL',collapsed:false};saveElement(node);return;}
     if(activeTool==='CONNECTOR'){const hit=[...elements].reverse().find(el=>{const b=elementBounds(el);return p.x>=b.x&&p.x<=b.x+b.w&&p.y>=b.y&&p.y<=b.y+b.h;});if(!hit)return showToast('Tap a shape or text box to start a connector');if(connectorStartId===null){connectorStartId=hit.id;return showToast('Now tap the connected shape');}if(connectorStartId!==hit.id){saveElement({_kind:'connector',type:'com.impactyn.taskmanager.data.entities.SketchElement.Connector',fromId:connectorStartId,toId:hit.id,colorArgb:activeColor,strokeWidth:2,curveStyle:'STRAIGHT'});}connectorStartId=null;return;}
     if (activeTool === 'SELECT') {
-      const hit = [...elements].reverse().find((el) => { const b=elementBounds(el); return p.x>=b.x-6&&p.x<=b.x+b.w+6&&p.y>=b.y-6&&p.y<=b.y+b.h+6; });
-      if (!hit && event.pointerType !== 'pen' && !event.shiftKey) {
+      let hit = [...elements].reverse().find((el) => { const b=elementBounds(el); return p.x>=b.x-6&&p.x<=b.x+b.w+6&&p.y>=b.y-6&&p.y<=b.y+b.h+6; });
+      if (hit?.isPageBody && event.pointerType === 'pen' && !event.shiftKey) hit = null;
+      if ((!hit || hit.isPageBody) && event.pointerType !== 'pen' && !event.shiftKey) {
         event.preventDefault();
-        $('.canvas-text-editor')?.blur();
-        selection = new Set();
-        renderCanvas();
-        startTextEditor(p);
+        if (!hit) selection = new Set();
+        startPageBodyEditor(p, '', { clientX: event.clientX, clientY: event.clientY });
         return;
       }
       if (!hit && event.pointerType === 'pen') {
@@ -689,7 +802,7 @@
     if (!selectedBoard) return;
     const p = point(event);
     const hit = [...elements].reverse().find((el) => el._kind === 'textbox' && (() => { const b = elementBounds(el); return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h; })());
-    if (hit) { event.preventDefault(); startTextEditor({ x: hit.x, y: hit.y }, hit); }
+    if (hit) { event.preventDefault(); startPageBodyEditor(p, '', { clientX: event.clientX, clientY: event.clientY }); }
   });
   canvas.addEventListener('pointermove', (event) => {
     if (!drawing) return; const p=point(event);
@@ -808,7 +921,7 @@
   }
   function pasteText(text) {
     if (!selectedBoard || !text.trim()) return;
-    startTextEditor(pageCenter(), null, text.trim());
+    startPageBodyEditor(pageCenter(), text.trim(), { append: true });
   }
   async function pasteButtonAction() {
     try {
@@ -909,7 +1022,7 @@
     if (event.key === 'Escape' && document.fullscreenElement) { await document.exitFullscreen(); return; }
     if ((event.key === 'Delete' || event.key === 'Backspace') && selection.size && !editable) { event.preventDefault(); await deleteSelection(); return; }
     if (!editable && selectedBoard && (event.target === canvas || event.target === document.body) && event.key.length === 1 && !mod && !event.altKey) {
-      event.preventDefault(); startTextEditor(pageCenter(), null, event.key);
+      event.preventDefault(); startPageBodyEditor(pageCenter(), event.key, { insertText: true });
     }
   });
   window.addEventListener('paste', (event) => {

@@ -32,6 +32,11 @@
     .sketch-active .empty-sketch{position:absolute;inset:0;height:auto;align-content:center;justify-items:center;text-align:center;line-height:1.65;pointer-events:none}.sketch-ribbon-shell{flex:0 0 auto;min-width:0;background:var(--surface-2);border-bottom:1px solid var(--line)}.sketch-ribbon-tabs{height:30px;display:flex;align-items:stretch;gap:4px;padding:0 8px;overflow-x:auto;scrollbar-width:none}.sketch-ribbon-tabs button{flex:0 0 auto;padding:0 12px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--muted);font-size:10px;font-weight:700;cursor:pointer}.sketch-ribbon-tabs button.active{color:var(--accent);border-bottom-color:var(--accent)}.sketch-ribbon{min-height:48px;overflow-x:auto;border-bottom:0;background:transparent}.sketch-ribbon .ribbon-group{min-height:37px}.sketch-ribbon .ribbon-group[hidden]{display:none!important}
     @media(max-width:780px){.sketch-ribbon-tabs{height:27px;padding:0 4px}.sketch-ribbon-tabs button{padding:0 10px;font-size:10px}.sketch-ribbon{min-height:44px;padding:5px}.sketch-ribbon .ribbon-label{display:block;font-size:8px}}
   </style>
+  <style>
+    .page-body-editor{position:absolute;z-index:2;display:block;box-sizing:border-box;max-width:none;padding:0 6px;border:0;border-radius:0;outline:0;resize:none;overflow:visible;white-space:pre-wrap;overflow-wrap:anywhere;background:transparent;color:var(--ink);box-shadow:none;cursor:text;caret-color:var(--accent);-webkit-user-select:text;user-select:text}
+    .page-body-editor:empty:before{content:attr(data-placeholder);color:var(--muted);opacity:.65;pointer-events:none}
+    .sketch-active #sketch-view{gap:8px}
+  </style>
 </head>
 <body>
   <div class="app">
@@ -92,7 +97,7 @@
                 <div class="ribbon-group" data-ribbon-group="view" hidden><span class="ribbon-label">Zoom &amp; sync</span><button class="tool" id="zoom-out" title="Zoom out">−</button><button class="tool" id="zoom-label" title="Reset zoom">100%</button><button class="tool" id="zoom-in" title="Zoom in">＋</button><button class="tool" id="zoom-fit" title="Fit page">Fit</button><button class="tool" id="save-sketch" title="Save status">✓ Synced</button><span id="save-state" style="font-size:10px;color:var(--muted);white-space:nowrap">Live sync ready</span></div>
               </div>
             </div>
-            <div class="sketch-drawing-area"><canvas id="board-canvas" tabindex="0" aria-label="Notebook page. Click to type, or select Pen to draw."></canvas><div class="empty-sketch" id="empty-sketch">Click anywhere on this page to type.<br>Choose Pen to write or draw by hand.</div></div>
+            <div class="sketch-drawing-area"><canvas id="board-canvas" tabindex="0" aria-label="Notebook page. Click anywhere to type, or select Pen to draw."></canvas><div class="empty-sketch" id="empty-sketch">Click anywhere on this page to type.<br>Keep typing here like a normal page, or choose Pen to draw.</div></div>
           </section>
         </div>
       </section>
@@ -130,6 +135,6 @@
   <script src="https://www.gstatic.com/firebasejs/12.19.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="sketches.js?v=sketch-onenote-page-20260930"></script>
+  <script src="sketches.js?v=sketch-page-flow-20260930"></script>
 </body>
 </html>
