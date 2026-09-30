@@ -24,10 +24,7 @@
     ? firebase.app()
     : firebase.initializeApp(window.taskflowFirebaseConfig);
   const db = app.firestore();
-  const auth = app.auth();
-  const mediaOwnerEmail = 'ahmed.elmenshawie@gmail.com';
   const supabaseUrl = 'https://dhipmsdnskhxwlnpfwnq.supabase.co';
-  const supabasePublishableKey = 'sb_publishable_jr67l19NLBNBqBtz5UpvWQ_dC_Q6Pbo';
   const boardsRef = db.collection('sketchBoards');
   const boardTree = $('#board-tree');
   const canvas = $('#board-canvas');
@@ -43,6 +40,9 @@
   let erase = false;
   let activeTool = 'PEN';
   let activeColor = 0xFF1B1F1C;
+  let zoomFactor = 1;
+  let clipboardElements = [];
+  let clipboardPlain = '';
   let shapeStart = null;
   let shapePreview = null;
   let selection = new Set();
@@ -56,17 +56,6 @@
   let currentStroke = null;
   let imageLayout = { scale: 1, x: 0, y: 0, bounds: { minX: 0, minY: 0 } };
   let lastSaveError = '';
-
-  function isMediaOwner(user) {
-    return Boolean(user?.emailVerified && user.email?.toLowerCase() === mediaOwnerEmail);
-  }
-
-  async function requireMediaOwner() {
-    const user = auth.currentUser;
-    if (!user) throw new Error('Sign in with the owner Google account to load private media.');
-    if (!isMediaOwner(user)) throw new Error(`Use the verified Google account ${mediaOwnerEmail} to load private media.`);
-    return user;
-  }
 
   function labelForType(el) {
     const raw = String(el.type || el.kind || '').split('.').pop().toLowerCase();
@@ -199,7 +188,7 @@
           try { return decodeURIComponent(part.replace(/\+/g, '%2B')); } catch { return part; }
         }).join('/');
         const encodedPath = objectPath.split('/').map(encodeURIComponent).join('/');
-        url = supabaseUrl + '/storage/v1/object/public/sketch-media/' + encodedPath;
+        url = `${supabaseUrl}/storage/v1/object/public/sketch-media/${encodedPath}`;
       }
       const mime = mediaMime(el);
       if (!mime.startsWith('image/') && !mime.startsWith('video/')) {
@@ -218,7 +207,7 @@
       loadedImages.set(source, null); showLinks(); renderCanvas();
       if (source.startsWith('supabase-media://')) {
         $('#media-auth-actions').hidden = false;
-        $('#media-auth-state').textContent = 'Media could not load: ' + error.message;
+        $('#media-auth-state').textContent = `Media could not load: ${error.message}`;
         $('#media-sign-in').hidden = true;
       }
     }
@@ -279,10 +268,21 @@
     }
     if (kind === 'textbox' || kind === 'treenode') {
       if (el.backgroundColorArgb != null || kind === 'treenode') { ctx.fillStyle = color(el.backgroundColorArgb, '#f4f2ff', false); ctx.fillRect(x, y, w, h); }
-      ctx.fillStyle = ink; ctx.font = `${Math.max(10, Number(el.fontSize) || 16)}px sans-serif`;
-      const words = String(el.text || '').split(/\s+/); let line = ''; let row = 0;
-      for (const word of words) { const next = line ? `${line} ${word}` : word; if (ctx.measureText(next).width > Math.max(20, w - 12) && line) { ctx.fillText(line, x + 6, y + 18 + row * ((Number(el.fontSize) || 16) + 4)); row++; line = word; } else line = next; }
-      if (line) ctx.fillText(line, x + 6, y + 18 + row * ((Number(el.fontSize) || 16) + 4), Math.max(20, w - 12));
+      const fontSize = Math.max(10, Number(el.fontSize) || 16);
+      const fontFamily = ['Arial', 'Lora', 'Caveat'].includes(el.fontFamily) ? el.fontFamily : 'Arial';
+      ctx.fillStyle = ink; ctx.font = `${fontSize}px "${fontFamily}"`;
+      const lines = [];
+      for (const sourceLine of String(el.text || '').split('\n')) {
+        let line = '';
+        for (const word of sourceLine.split(/\s+/)) {
+          const next = line ? `${line} ${word}` : word;
+          if (ctx.measureText(next).width > Math.max(20, w - 12) && line) { lines.push(line); line = word; }
+          else line = next;
+        }
+        lines.push(line);
+      }
+      const lineHeight = fontSize + 4;
+      lines.forEach((line, row) => { if (line) ctx.fillText(line, x + 6, y + 18 + row * lineHeight, Math.max(20, w - 12)); });
       if (Number(el.borderWidth) > 0 || kind === 'treenode') { ctx.strokeStyle = color(el.borderColorArgb || el.colorArgb); ctx.strokeRect(x, y, w, h); }
       return;
     }
@@ -323,12 +323,14 @@
     if (!selectedBoard) { $('#empty-sketch').hidden = false; return; }
     $('.sketch-drawing-area').dataset.pattern = String(selectedBoard.backgroundPattern || 'BLANK').toUpperCase();
     $('#empty-sketch').hidden = elements.length > 0 || drawing;
-    if (!elements.length && !drawing) return;
     const b = boundsFor(elements);
     const worldW = Math.max(1, b.maxX - b.minX), worldH = Math.max(1, b.maxY - b.minY);
-    const scale = Math.min((rect.width - 30) / worldW, (rect.height - 30) / worldH, 1.4);
+    const fitScale = Math.min((rect.width - 30) / worldW, (rect.height - 30) / worldH, 1.4);
+    const scale = fitScale * zoomFactor;
     const x = (rect.width - worldW * scale) / 2, y = (rect.height - worldH * scale) / 2;
     imageLayout = { scale, x, y, bounds: b };
+    const zoomLabel = $('#zoom-label'); if (zoomLabel) zoomLabel.textContent = `${Math.round(zoomFactor * 100)}%`;
+    if (!elements.length && !drawing) return;
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (x - b.minX * scale), dpr * (y - b.minY * scale));
     const treeNodes = new Map(elements.filter((element) => element._kind === 'treenode').map((element) => [element.id, element]));
     ctx.strokeStyle = '#8a8578'; ctx.lineWidth = 2; ctx.lineCap = 'round';
@@ -400,6 +402,15 @@
       children.get(parent).push(board);
     }
     for (const group of children.values()) group.sort((a, b) => Number(a.orderIndex || 0) - Number(b.orderIndex || 0) || String(a.name).localeCompare(String(b.name)));
+    const query = ($('#board-filter')?.value || '').trim().toLocaleLowerCase();
+    const matches = new Set();
+    if (query) {
+      for (const board of boards) {
+        if (!String(board.name || '').toLocaleLowerCase().includes(query)) continue;
+        let current = board;
+        while (current && !matches.has(current.id)) { matches.add(current.id); current = byId.get(current.parentBoardId); }
+      }
+    }
     const visited = new Set();
     const rows = [];
     function append(parentId, depth) {
@@ -408,7 +419,7 @@
         visited.add(board.id);
         const count = Number(board.elementCount || 0);
         const section = Boolean(board.isSection);
-        rows.push(`<div class="board-entry ${section ? 'section-entry' : ''} ${selectedBoard?.id === board.id ? 'active' : ''}" style="padding-left:${8 + Math.min(depth, 7) * 17}px" ${section ? '' : `data-board-id="${escapeHtml(board.id)}"`} title="${escapeHtml(board.name)}"><span aria-hidden="true">${section ? '▸' : (depth ? '↳' : '▱')}</span><span class="board-name">${escapeHtml(board.name || 'Untitled board')}</span><span class="board-count">${count || ''}</span></div>`);
+        if (!query || matches.has(board.id)) rows.push(`<div class="board-entry ${section ? 'section-entry' : ''} ${selectedBoard?.id === board.id ? 'active' : ''}" style="padding-left:${8 + Math.min(depth, 7) * 17}px" ${section ? '' : `data-board-id="${escapeHtml(board.id)}"`} title="${escapeHtml(board.name)}"><span aria-hidden="true">${section ? '▸' : (depth ? '↳' : '▱')}</span><span class="board-name">${escapeHtml(board.name || 'Untitled board')}</span><span class="board-count">${count || ''}</span></div>`);
         append(board.id, depth + 1);
       }
     }
@@ -443,6 +454,7 @@
     if (boardListener) boardListener();
     if (contentListener) contentListener();
     selectedBoard = board;
+    zoomFactor = 1;
     elements = [];
     for (const image of loadedImages.values()) if (image instanceof Image && image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
     loadedImages.clear();
@@ -496,46 +508,6 @@
     notice(`The Firebase connection could not read sketchBoards: ${error.message}. The page did not change any stored data.`);
   });
 
-  $('#media-sign-in').addEventListener('click', async () => {
-    if (location.protocol === 'file:') {
-      notice('Private media sign-in requires this site to be served from HTTPS or localhost.');
-      return;
-    }
-    try {
-      const provider = new firebase.auth.GoogleAuthProvider();
-      provider.setCustomParameters({ login_hint: mediaOwnerEmail });
-      const result = await auth.signInWithPopup(provider);
-      if (!isMediaOwner(result.user)) {
-        await auth.signOut();
-        throw new Error(`Sign in with the verified Google account ${mediaOwnerEmail}.`);
-      }
-    } catch (error) {
-      $('#media-auth-actions').hidden = false;
-      $('#media-auth-state').textContent = error.message || 'Google sign-in failed.';
-    }
-  });
-
-  auth.onAuthStateChanged((user) => {
-    const allowed = isMediaOwner(user);
-    $('#media-auth-actions').hidden = allowed;
-    $('#media-sign-in').hidden = allowed;
-    if (location.protocol === 'file:') {
-      $('#media-auth-state').textContent = 'Open this page over HTTPS or localhost to sign in and load private images.';
-    } else if (!allowed) {
-      $('#media-auth-state').textContent = `Sign in with ${mediaOwnerEmail} to load private images and videos.`;
-    }
-    if (user && !allowed) {
-      auth.signOut().catch((error) => console.warn('Could not clear an unauthorized media session', error));
-      return;
-    }
-    if (allowed && selectedBoard) {
-      for (const [source, value] of loadedImages) {
-        if (source.startsWith('supabase-media://') && value === null) loadedImages.delete(source);
-      }
-      renderCanvas();
-    }
-  });
-
   boardTree.addEventListener('click', (event) => {
     const entry = event.target.closest('[data-board-id]');
     if (entry) { const board = boards.find((item) => item.id === entry.dataset.boardId); if (board) selectBoard(board); }
@@ -587,14 +559,82 @@
     return { x: (x - layout.x) / layout.scale + layout.bounds.minX, y: (y - layout.y) / layout.scale + layout.bounds.minY, t: Date.now(), pressure: Number(e.pressure) || 0.5 };
   }
 
+  function pageCenter() {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (rect.width / 2 - imageLayout.x) / imageLayout.scale + imageLayout.bounds.minX,
+      y: (rect.height / 2 - imageLayout.y) / imageLayout.scale + imageLayout.bounds.minY
+    };
+  }
+
+  function startTextEditor(worldPoint, existing = null, initialText = '') {
+    if (!selectedBoard) return;
+    const area = $('.sketch-drawing-area');
+    const canvasRect = canvas.getBoundingClientRect();
+    const areaRect = area.getBoundingClientRect();
+    const box = existing ? elementBounds(existing) : { x: worldPoint.x, y: worldPoint.y, w: 280, h: 64 };
+    const editor = document.createElement('textarea');
+    editor.className = 'canvas-text-editor';
+    editor.setAttribute('aria-label', 'Write on sketch page');
+    editor.value = existing?.text || initialText;
+    const family = existing?.fontFamily || $('#board-font-family').value || 'Arial';
+    const size = Number(existing?.fontSize || $('#board-font-size').value) || 20;
+    editor.style.left = `${canvasRect.left - areaRect.left + imageLayout.x + (box.x - imageLayout.bounds.minX) * imageLayout.scale}px`;
+    editor.style.top = `${canvasRect.top - areaRect.top + imageLayout.y + (box.y - imageLayout.bounds.minY) * imageLayout.scale}px`;
+    editor.style.width = `${Math.max(180, Math.min(540, box.w * imageLayout.scale))}px`;
+    editor.style.height = `${Math.max(48, Math.min(300, box.h * imageLayout.scale))}px`;
+    editor.style.fontFamily = family;
+    editor.style.fontSize = `${Math.max(10, size * imageLayout.scale)}px`;
+    editor.style.color = existing ? color(existing.colorArgb) : color(activeColor);
+    area.append(editor);
+    let committed = false;
+    const close = () => { if (editor.isConnected) editor.remove(); canvas.focus({ preventScroll: true }); };
+    const commit = async () => {
+      if (committed) return;
+      committed = true;
+      const value = editor.value.trim();
+      if (!value) { close(); return; }
+      const width = Math.max(180, Math.min(1100, editor.offsetWidth / imageLayout.scale));
+      const height = Math.max(size + 20, Math.min(700, editor.offsetHeight / imageLayout.scale));
+      const item = {
+        ...(existing || {}),
+        type: existing?.type || 'com.impactyn.taskmanager.data.entities.SketchElement.TextBox',
+        kind: 'textbox', _kind: 'textbox',
+        x: box.x, y: box.y, w: width, h: height, text: value,
+        fontSize: size, fontFamily: family,
+        colorArgb: existing?.colorArgb ?? activeColor, borderWidth: existing?.borderWidth || 0
+      };
+      close();
+      if (existing) {
+        const before = elements.map(cloneElement);
+        elements = elements.map((el) => el.id === existing.id ? item : el);
+        try {
+          recordUndo(before);
+          const record = { ...item }; delete record._kind;
+          await boardsRef.doc(selectedBoard.id).collection('elements').doc(String(item.id)).set({ elementJson: JSON.stringify(record), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+          $('#save-state').textContent = 'Saved to shared Firebase';
+          renderCanvas();
+        } catch (error) { elements = before; renderCanvas(); notice(`Could not update text: ${error.message}`); }
+      } else saveElement(item);
+    };
+    editor.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); committed = true; close(); }
+      else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); commit(); }
+    });
+    editor.addEventListener('blur', commit, { once: true });
+    editor.focus({ preventScroll: true });
+    if (initialText) editor.setSelectionRange(initialText.length, initialText.length);
+  }
+
   canvas.addEventListener('pointerdown', (event) => {
-      if (!selectedBoard) return;
-    const p = point(event); canvas.setPointerCapture(event.pointerId);
+    if (!selectedBoard) return;
+    const p = point(event);
     if (activeTool === 'TEXT') {
-      const text = prompt('Text to add:');
-      if (text?.trim()) saveElement({ type: 'com.impactyn.taskmanager.data.entities.SketchElement.TextBox', kind: 'textbox', x:p.x, y:p.y, w:260, h:32, text:text.trim(), fontSize:20, colorArgb:activeColor, borderWidth:0 });
+      startTextEditor(p);
       return;
     }
+    canvas.focus({ preventScroll: true });
+    canvas.setPointerCapture(event.pointerId);
     if(activeTool==='IMAGE'){const url=prompt('Paste an image, GIF, video, or document URL:');if(url?.trim()){const u=url.trim();const mime=u.toLowerCase().match(/\.(gif|png|jpe?g|webp|svg|mp4|webm|pdf)(?:\?|$)/)?.[1]||'';const map={jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',gif:'image/gif',webp:'image/webp',svg:'image/svg+xml',mp4:'video/mp4',webm:'video/webm',pdf:'application/pdf'};saveElement({_kind:'image',type:'com.impactyn.taskmanager.data.entities.SketchElement.Image',x:p.x,y:p.y,w:480,h:280,uriString:u,mimeType:map[mime]||'',mediaName:u.split('/').pop()||'Linked media'});}return;}
     if(activeTool==='TREE'){const selected=elements.find(el=>selection.has(el.id)&&el._kind==='treenode');const id=elements.reduce((m,el)=>Math.max(m,el.id+1),1);const node={_kind:'treenode',type:'com.impactyn.taskmanager.data.entities.SketchElement.TreeNode',id,parentId:selected?.id??null,x:p.x,y:p.y,w:180,h:68,text:selected?'Decision':'Root decision',colorArgb:activeColor,orientation:'VERTICAL',collapsed:false};saveElement(node);return;}
     if(activeTool==='CONNECTOR'){const hit=[...elements].reverse().find(el=>{const b=elementBounds(el);return p.x>=b.x&&p.x<=b.x+b.w&&p.y>=b.y&&p.y<=b.y+b.h;});if(!hit)return showToast('Tap a shape or text box to start a connector');if(connectorStartId===null){connectorStartId=hit.id;return showToast('Now tap the connected shape');}if(connectorStartId!==hit.id){saveElement({_kind:'connector',type:'com.impactyn.taskmanager.data.entities.SketchElement.Connector',fromId:connectorStartId,toId:hit.id,colorArgb:activeColor,strokeWidth:2,curveStyle:'STRAIGHT'});}connectorStartId=null;return;}
@@ -618,6 +658,12 @@
     drawing = true;
     currentStroke = { type: activeTool==='CURVE'?'com.impactyn.taskmanager.data.entities.SketchElement.Curve':'com.impactyn.taskmanager.data.entities.SketchElement.Stroke', id: 0, colorArgb: erase ? 0 : (activeTool==='HIGHLIGHTER' ? ((activeColor & 0x00FFFFFF) | 0x66000000) : activeColor), strokeWidth: erase ? 18 : 4, isEraser: erase, isHighlighter: activeTool==='HIGHLIGHTER', points: [p], _kind: activeTool==='CURVE'?'curve':'stroke' };
     renderCanvas();
+  });
+  canvas.addEventListener('dblclick', (event) => {
+    if (!selectedBoard) return;
+    const p = point(event);
+    const hit = [...elements].reverse().find((el) => el._kind === 'textbox' && (() => { const b = elementBounds(el); return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h; })());
+    if (hit) { event.preventDefault(); startTextEditor({ x: hit.x, y: hit.y }, hit); }
   });
   canvas.addEventListener('pointermove', (event) => {
     if (!drawing) return; const p=point(event);
@@ -684,8 +730,77 @@
       item.id=nextId;
     });
   }
-  function recordUndo(snapshot=elements) { undoStack.push(snapshot.map(el=>({...el,points:el.points?.map(pt=>({...pt}))}))); if(undoStack.length>40)undoStack.shift(); redoStack.length=0; }
+  function cloneElement(el) { return JSON.parse(JSON.stringify(el)); }
+  function recordUndo(snapshot=elements) { undoStack.push(snapshot.map(cloneElement)); if(undoStack.length>40)undoStack.shift(); redoStack.length=0; }
   async function saveElement(item) { try { recordUndo();await persistElement(item);lastSaveError='';$('#save-state').textContent='Saved to shared Firebase';renderCanvas(); } catch(error) { lastSaveError=error.message;notice(`Could not save element: ${error.message}`); } }
+  function selectedElements() { return elements.filter((el) => selection.has(el.id)); }
+  async function formatSelectedText(updates) {
+    const picked = selectedElements().filter((el) => el._kind === 'textbox' || el._kind === 'treenode');
+    if (!picked.length) return;
+    const before = elements.map(cloneElement);
+    recordUndo(before);
+    elements = elements.map((el) => selection.has(el.id) && (el._kind === 'textbox' || el._kind === 'treenode') ? { ...el, ...updates } : el);
+    try {
+      const col = boardsRef.doc(selectedBoard.id).collection('elements');
+      for (let i = 0; i < picked.length; i += 450) {
+        const batch = db.batch();
+        picked.slice(i, i + 450).forEach((el) => {
+          const updated = elements.find((item) => item.id === el.id);
+          const record = { ...updated }; delete record._kind;
+          batch.set(col.doc(String(updated.id)), { elementJson: JSON.stringify(record), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+        });
+        await batch.commit();
+      }
+      renderCanvas();
+      showToast('Text formatting saved');
+    } catch (error) { elements = before; renderCanvas(); notice(`Could not format text: ${error.message}`); }
+  }
+  async function copySelection() {
+    const picked = selectedElements();
+    if (!picked.length) return showToast('Select something on the page first');
+    clipboardElements = picked.map(cloneElement);
+    clipboardPlain = picked.filter((el) => el._kind === 'textbox' || el._kind === 'treenode').map((el) => el.text || '').filter(Boolean).join('\n') || `${picked.length} sketch element${picked.length === 1 ? '' : 's'}`;
+    try { await navigator.clipboard?.writeText(clipboardPlain); } catch { /* In-memory sketch copy still works. */ }
+    showToast(`Copied ${picked.length} item${picked.length === 1 ? '' : 's'} — paste with Ctrl/Cmd+V`);
+  }
+  async function pasteElements(items = clipboardElements) {
+    if (!selectedBoard) return showToast('Choose a page before pasting');
+    if (!items.length) return showToast('Copy a sketch item first, or paste text from your clipboard');
+    recordUndo();
+    selection = new Set();
+    try {
+      for (const source of items) {
+        const copy = moveElement(cloneElement(source), 28, 28);
+        delete copy.id;
+        await persistElement(copy);
+        elements.push(copy);
+        selection.add(copy.id);
+      }
+      renderCanvas();
+      showToast(`Pasted ${items.length} item${items.length === 1 ? '' : 's'}`);
+    } catch (error) { renderCanvas(); notice(`Paste stopped: ${error.message}`); }
+  }
+  function pasteText(text) {
+    if (!selectedBoard || !text.trim()) return;
+    startTextEditor(pageCenter(), null, text.trim());
+  }
+  async function pasteButtonAction() {
+    try {
+      const text = await navigator.clipboard?.readText();
+      if (text && clipboardElements.length && text === clipboardPlain) return pasteElements();
+      if (text?.trim()) return pasteText(text);
+    } catch { /* Clipboard permission may be unavailable; use the local sketch clipboard below. */ }
+    if (clipboardElements.length) return pasteElements();
+    showToast('Use Ctrl/Cmd+V after copying text or an item');
+  }
+  async function deleteSelection() {
+    if (!selectedBoard || !selection.size) return;
+    recordUndo();
+    elements = elements.filter((el) => !selection.has(el.id));
+    selection = new Set();
+    await replaceBoardElements(elements);
+    renderCanvas();
+  }
   function moveElement(el,dx,dy) {
     if(el.points)return {...el,points:el.points.map(p=>({...p,x:p.x+dx,y:p.y+dy}))};
     if(el.start&&el.end)return {...el,start:{x:el.start.x+dx,y:el.start.y+dy},end:{x:el.end.x+dx,y:el.end.y+dy}};
@@ -697,7 +812,27 @@
     catch(error){notice(`Could not save moved elements: ${error.message}`);}
   }
   document.querySelectorAll('[data-tool]').forEach(button=>button.addEventListener('click',()=>{activeTool=button.dataset.tool;erase=activeTool==='ERASER';document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('active',b===button));canvas.style.cursor=activeTool==='SELECT'?'move':activeTool==='LASSO'?'crosshair':'crosshair';}));
+  $('#board-filter').addEventListener('input', buildTree);
+  $('#toggle-board-panel').addEventListener('click', () => $('.sketch-layout').classList.toggle('boards-hidden'));
+  $('#board-copy').addEventListener('click', copySelection);
+  $('#board-paste').addEventListener('click', pasteButtonAction);
+  $('#board-font-size').addEventListener('change', (event) => { event.target.value = String(Math.max(10, Math.min(96, Number(event.target.value) || 20))); formatSelectedText({ fontSize: Number(event.target.value) }); });
+  $('#board-font-family').addEventListener('change', (event) => formatSelectedText({ fontFamily: event.target.value }));
+  $('#zoom-in').addEventListener('click', () => { zoomFactor = Math.min(2.5, +(zoomFactor + 0.1).toFixed(2)); renderCanvas(); });
+  $('#zoom-out').addEventListener('click', () => { zoomFactor = Math.max(0.4, +(zoomFactor - 0.1).toFixed(2)); renderCanvas(); });
+  $('#zoom-label').addEventListener('click', () => { zoomFactor = 1; renderCanvas(); });
+  $('#zoom-fit').addEventListener('click', () => { zoomFactor = 1; renderCanvas(); });
+  $('#sketch-exit').addEventListener('click', () => document.querySelector('[data-page="Tasks"]').click());
+  $('#sketch-fullscreen').addEventListener('click', async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else if ($('#sketch-view').requestFullscreen) await $('#sketch-view').requestFullscreen();
+      else showToast('Use the browser full-screen control on this device');
+    } catch { showToast('Browser full screen is unavailable here'); }
+  });
+  document.addEventListener('fullscreenchange', () => { $('#sketch-fullscreen').textContent = document.fullscreenElement ? '⛶ Exit full screen' : '⛶ Full screen'; renderCanvas(); });
   $('#board-color').addEventListener('input',e=>{const v=e.target.value;activeColor=(0xFF000000|parseInt(v.slice(1),16)>>>0);});
+  $('#board-color').addEventListener('change', () => formatSelectedText({ colorArgb: activeColor }));
   $('#board-background').addEventListener('change',async e=>{if(!selectedBoard)return;selectedBoard.backgroundPattern=e.target.value;$('.sketch-drawing-area').dataset.pattern=e.target.value;await boardsRef.doc(selectedBoard.id).update({backgroundPattern:e.target.value,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});});
   $('#board-search').addEventListener('click',()=>{const q=prompt('Find text on this page:');if(!q)return;const found=elements.find(el=>String(el.text||'').toLowerCase().includes(q.toLowerCase()));if(found){selection=new Set([found.id]);renderCanvas();showToast('Text found and selected');}else showToast('No matching text on this page');});
   $('#board-export').addEventListener('click',()=>{renderCanvas();const a=document.createElement('a');a.download=`${selectedBoard?.name||'sketch'}.png`;a.href=canvas.toDataURL('image/png');a.click();});
@@ -708,7 +843,31 @@
   $('#board-undo').addEventListener('click',async()=>{if(!selectedBoard||!undoStack.length)return;redoStack.push(elements.map(el=>({...el})));elements=undoStack.pop();await replaceBoardElements(elements);renderCanvas();});
   $('#board-redo').addEventListener('click',async()=>{if(!selectedBoard||!redoStack.length)return;undoStack.push(elements.map(el=>({...el})));elements=redoStack.pop();await replaceBoardElements(elements);renderCanvas();});
   $('#board-clear').addEventListener('click',async()=>{if(!selectedBoard||!elements.length)return;if(!confirm(`Clear all ${elements.length} elements from “${selectedBoard.name}”?`))return;recordUndo();elements=[];await replaceBoardElements(elements);renderCanvas();});
-  window.addEventListener('keydown',async event=>{if((event.key==='Delete'||event.key==='Backspace')&&selection.size&&!event.target.matches('input,textarea,select')){event.preventDefault();if(!selectedBoard)return;recordUndo();elements=elements.filter(el=>!selection.has(el.id));selection=new Set();await replaceBoardElements(elements);renderCanvas();}});
+  window.addEventListener('keydown', async (event) => {
+    if (!document.body.classList.contains('sketch-active')) return;
+    const editable = event.target.matches?.('input,textarea,select,[contenteditable="true"]');
+    const mod = event.metaKey || event.ctrlKey;
+    if (mod && event.key.toLowerCase() === 'c' && selection.size && !editable) { event.preventDefault(); copySelection(); return; }
+    if (mod && event.key.toLowerCase() === 'x' && selection.size && !editable) { event.preventDefault(); await copySelection(); await deleteSelection(); return; }
+    if (mod && event.key.toLowerCase() === 'z' && !editable) {
+      event.preventDefault();
+      if (event.shiftKey) $('#board-redo').click(); else $('#board-undo').click();
+      return;
+    }
+    if (mod && event.key.toLowerCase() === 'y' && !editable) { event.preventDefault(); $('#board-redo').click(); return; }
+    if (event.key === 'Escape' && document.fullscreenElement) { await document.exitFullscreen(); return; }
+    if ((event.key === 'Delete' || event.key === 'Backspace') && selection.size && !editable) { event.preventDefault(); await deleteSelection(); return; }
+    if (!editable && selectedBoard && (event.target === canvas || event.target === document.body) && event.key.length === 1 && !mod && !event.altKey) {
+      event.preventDefault(); startTextEditor(pageCenter(), null, event.key);
+    }
+  });
+  window.addEventListener('paste', (event) => {
+    if (!document.body.classList.contains('sketch-active') || !selectedBoard || event.target.matches?.('input,textarea,select,[contenteditable="true"]')) return;
+    const text = event.clipboardData?.getData('text/plain') || '';
+    if (text && clipboardElements.length && text === clipboardPlain) { event.preventDefault(); pasteElements(); }
+    else if (text.trim()) { event.preventDefault(); pasteText(text); }
+    else if (event.clipboardData?.items?.length) showToast('Paste text here; use Media link for an image or video URL');
+  });
   $('#save-sketch').addEventListener('click', () => showToast(lastSaveError ? `Save failed: ${lastSaveError}` : 'Sketches save as you draw'));
   new ResizeObserver(renderCanvas).observe(canvas);
   new MutationObserver(renderCanvas).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
