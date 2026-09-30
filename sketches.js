@@ -171,8 +171,8 @@
         const video = String(type).startsWith('video/');
         const media = video ? document.createElement('video') : new Image();
         if (video) { media.controls = true; media.preload = 'metadata'; media.playsInline = true; }
-        media.addEventListener(video ? 'loadedmetadata' : 'load', () => { media.dataset.objectUrl = objectUrl; loadedImages.set(key, media); showLinks(); renderCanvas(); }, { once: true });
-        media.addEventListener('error', () => { URL.revokeObjectURL(objectUrl); loadedImages.set(key, null); showLinks(); }, { once: true });
+        media.addEventListener(video ? 'loadedmetadata' : 'load', () => { media.dataset.objectUrl = objectUrl; loadedImages.set(key, media); renderCanvas(); }, { once: true });
+        media.addEventListener('error', () => { URL.revokeObjectURL(objectUrl); loadedImages.set(key, null); renderCanvas(); }, { once: true });
         media.src = objectUrl;
       } catch (error) {
         console.warn('Could not load sketch image', key, error);
@@ -195,18 +195,18 @@
       const mime = mediaMime(el);
       if (!mime.startsWith('image/') && !mime.startsWith('video/')) {
         loadedImages.set(source, { kind: 'document', src: url });
-        showLinks(); renderCanvas();
+        renderCanvas();
         return;
       }
       const video = mime.startsWith('video/') || /\.(mp4|webm|mov)(?:[?#]|$)/i.test(url);
       const media = video ? document.createElement('video') : new Image();
       if (video) { media.controls = true; media.preload = 'metadata'; media.playsInline = true; }
-      media.addEventListener(video ? 'loadedmetadata' : 'load', () => { loadedImages.set(source, media); showLinks(); renderCanvas(); }, { once: true });
-      media.addEventListener('error', () => { loadedImages.set(source, null); showLinks(); renderCanvas(); }, { once: true });
+      media.addEventListener(video ? 'loadedmetadata' : 'load', () => { loadedImages.set(source, media); renderCanvas(); }, { once: true });
+      media.addEventListener('error', () => { loadedImages.set(source, null); renderCanvas(); }, { once: true });
       media.src = url;
     } catch (error) {
       console.warn('Could not load external sketch media', source, error);
-      loadedImages.set(source, null); showLinks(); renderCanvas();
+      loadedImages.set(source, null); renderCanvas();
       if (source.startsWith('supabase-media://')) {
         $('#media-auth-actions').hidden = false;
         $('#media-auth-state').textContent = `Media could not load: ${error.message}`;
@@ -374,8 +374,6 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
-  function showLinks() { $('#sketch-links')?.remove(); }
-
   function buildTree() {
     const pageCount = boards.filter((board) => !board.isSection).length;
     $('#board-count').textContent = `${pageCount} ${pageCount === 1 ? 'page' : 'pages'}`;
@@ -421,7 +419,7 @@
     const text = state.node?.isConnected ? state.node.innerText.replace(/\r\n?/g, '\n') : state.text;
     state.text = text;
     const item = { ...state.item, _kind: 'textbox', isPageBody: true, text };
-    if (state.node?.isConnected) item.h = Math.max(120, state.node.getBoundingClientRect().height / zoomFactor);
+    if (state.node?.isConnected) item.h = Math.max(40, state.node.getBoundingClientRect().height / zoomFactor);
     state.item = item;
     return item;
   }
@@ -440,7 +438,7 @@
     elements = incoming.sort((a, b) => a.id - b.id);
     if (selectedBoard) selectedBoard.elementCount = elements.length;
     $('#selected-board-meta').textContent = `${elements.length} elements · ${selectedBoard?.sourceSection || selectedBoard?.sourceNotebook || 'Firebase'}`;
-    showLinks(); renderCanvas(); buildTree();
+    renderCanvas(); buildTree();
   }
 
   async function loadLegacyContent(boardId) {
@@ -586,10 +584,10 @@
     const box = state.item;
     state.node.style.left = `${canvas.offsetLeft + imageLayout.x + (box.x - imageLayout.bounds.minX) * imageLayout.scale}px`;
     state.node.style.top = `${canvas.offsetTop + imageLayout.y + (box.y - imageLayout.bounds.minY) * imageLayout.scale}px`;
-    state.node.style.width = `${Math.max(240, box.w * imageLayout.scale)}px`;
-    state.node.style.minHeight = `${Math.max(120, box.h * imageLayout.scale)}px`;
+    state.node.style.width = `${Math.max(1, box.w * imageLayout.scale)}px`;
+    state.node.style.minHeight = `${Math.max(40, box.h * imageLayout.scale)}px`;
     state.node.style.fontFamily = box.fontFamily || 'Arial';
-    state.node.style.fontSize = `${Math.max(12, (Number(box.fontSize) || 20) * imageLayout.scale)}px`;
+    state.node.style.fontSize = `${Math.max(8, (Number(box.fontSize) || 20) * imageLayout.scale)}px`;
     state.node.style.lineHeight = `${((Number(box.fontSize) || 20) + 4) * imageLayout.scale}px`;
     state.node.style.color = color(box.colorArgb);
   }
@@ -630,12 +628,13 @@
       $('#selected-board-meta').textContent = `${elements.length} elements · ${selectedBoard.sourceSection || selectedBoard.sourceNotebook || 'Firebase'}`;
       if (render) renderCanvas();
     }
+    return item;
   }
 
   function queuePageBodySave(state, immediate = false) {
     clearTimeout(pageBodySaveTimer);
     if (immediate) { void persistPageBody(state); return; }
-    pageBodySaveTimer = setTimeout(() => persistPageBody(state), 650);
+    pageBodySaveTimer = setTimeout(() => persistPageBody(state), 900);
   }
 
   function persistPageBody(state) {
@@ -693,8 +692,8 @@
       const text = String(existing?.text || '');
       const item = existing ? { ...existing } : {
         type: 'com.impactyn.taskmanager.data.entities.SketchElement.TextBox', kind: 'textbox', _kind: 'textbox',
-        id: 0, isPageBody: true, x: 0, y: 0,
-        w: Math.max(320, Math.min(1600, (area.clientWidth - 72) / zoomFactor)), h: 160,
+        id: 0, isPageBody: true, x: Number(worldPoint?.x) || 0, y: Number(worldPoint?.y) || 0,
+        w: Math.max(320, Math.min(1600, (area.clientWidth - 72) / zoomFactor)), h: 40,
         fontSize: Number($('#board-font-size').value) || 20,
         fontFamily: $('#board-font-family').value || 'Arial', colorArgb: activeColor, borderWidth: 0
       };
@@ -705,7 +704,7 @@
       editor.setAttribute('role', 'textbox');
       editor.setAttribute('aria-label', 'Notebook page text');
       editor.setAttribute('aria-multiline', 'true');
-      editor.dataset.placeholder = 'Click anywhere and keep typing…';
+      editor.dataset.placeholder = elements.some((element) => !isPageBody(element)) ? '' : 'Click anywhere and keep typing…';
       editor.spellcheck = true;
       editor.textContent = text;
       state.node = editor;
@@ -714,7 +713,10 @@
       positionPageBodyEditor();
       editor.addEventListener('input', () => {
         state.text = editor.innerText.replace(/\r\n?/g, '\n');
-        updateLocalPageBody(state);
+        const oldHeight = Number(state.item.h) || 40;
+        const item = updateLocalPageBody(state, false);
+        if (item.h > oldHeight + 1) renderCanvas();
+        $('#save-state').textContent = 'Saving…';
         queuePageBodySave(state);
       });
       editor.addEventListener('keydown', (event) => {
@@ -1009,7 +1011,7 @@
   $('#board-clear').addEventListener('click',async()=>{if(!selectedBoard||!elements.length)return;if(!confirm(`Clear all ${elements.length} elements from “${selectedBoard.name}”?`))return;recordUndo();elements=[];await replaceBoardElements(elements);renderCanvas();});
   window.addEventListener('keydown', async (event) => {
     if (!document.body.classList.contains('sketch-active')) return;
-    const editable = event.target.matches?.('input,textarea,select,[contenteditable="true"]');
+    const editable = event.target.matches?.('input,textarea,select,[contenteditable]');
     const mod = event.metaKey || event.ctrlKey;
     if (mod && event.key.toLowerCase() === 'c' && selection.size && !editable) { event.preventDefault(); copySelection(); return; }
     if (mod && event.key.toLowerCase() === 'x' && selection.size && !editable) { event.preventDefault(); await copySelection(); await deleteSelection(); return; }
@@ -1026,7 +1028,7 @@
     }
   });
   window.addEventListener('paste', (event) => {
-    if (!document.body.classList.contains('sketch-active') || !selectedBoard || event.target.matches?.('input,textarea,select,[contenteditable="true"]')) return;
+    if (!document.body.classList.contains('sketch-active') || !selectedBoard || event.target.matches?.('input,textarea,select,[contenteditable]')) return;
     const text = event.clipboardData?.getData('text/plain') || '';
     if (text && clipboardElements.length && text === clipboardPlain) { event.preventDefault(); pasteElements(); }
     else if (text.trim()) { event.preventDefault(); pasteText(text); }
