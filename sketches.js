@@ -58,6 +58,7 @@
   let pageBodySaveTimer = null;
   let textElementEditor = null;
   let textElementSaveTimer = null;
+  let nextProvisionalTextId = -1;
   let imageLayout = { scale: 1, x: 0, y: 0, bounds: { minX: 0, minY: 0 } };
   let lastSaveError = '';
 
@@ -452,8 +453,11 @@
     }
     if (textElementEditor?.boardId === selectedBoard?.id && textElementEditor.node.isConnected) {
       for (const draft of textElementEditor.layoutElements) {
-        const index = incoming.findIndex((el) => el.id === draft.id);
-        if (index >= 0) incoming[index] = { ...incoming[index], ...draft };
+        const pendingId = textElementEditor.isNew && draft.id === textElementEditor.item.id ? textElementEditor.pendingId : null;
+        const mergedDraft = pendingId ? { ...draft, id: pendingId } : draft;
+        const index = incoming.findIndex((el) => el.id === mergedDraft.id);
+        if (index >= 0) incoming[index] = { ...incoming[index], ...mergedDraft };
+        else if (textElementEditor.isNew && draft.id === textElementEditor.item.id) incoming.push(mergedDraft);
       }
       const draft = textElementEditor.layoutElements.find((el) => el.id === textElementEditor.item.id);
       if (draft) textElementEditor.item = draft;
@@ -638,25 +642,55 @@
   function persistTextElement(state) {
     state.savePromise = (state.savePromise || Promise.resolve()).catch(() => {}).then(async () => {
       const snapshot = state.layoutElements.map(cloneElement);
-      const changed = snapshot.filter((item) => {
+      const current = snapshot.find((item) => item.id === state.item.id);
+      if (!current) return;
+      if (state.isNew && !String(current.text || '').trim()) return;
+      const changed = snapshot.filter((item) => item.id !== current.id).filter((item) => {
         const previous = state.savedElements.find((el) => el.id === item.id);
         if (!previous) return false;
         const currentRecord = { ...item }; delete currentRecord._kind;
         const previousRecord = { ...previous }; delete previousRecord._kind;
         return JSON.stringify(currentRecord) !== JSON.stringify(previousRecord);
       });
-      if (!changed.length) return;
-      const batch = db.batch();
       const collection = boardsRef.doc(state.boardId).collection('elements');
-      changed.forEach((item) => {
-        const record = { ...item }; delete record._kind;
-        batch.set(collection.doc(String(item.id)), { elementJson: JSON.stringify(record), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
-      });
-      await batch.commit();
-      changed.forEach((item) => {
-        const savedIndex = state.savedElements.findIndex((el) => el.id === item.id);
-        if (savedIndex >= 0) state.savedElements[savedIndex] = cloneElement(item);
-      });
+      if (state.isNew) {
+        const contentRef = boardsRef.doc(state.boardId).collection('content').doc('elements');
+        const provisionalId = current.id;
+        let nextId;
+        await db.runTransaction(async (transaction) => {
+          const snap = await transaction.get(contentRef);
+          nextId = Math.max(
+            snapshot.reduce((max, element) => Math.max(max, Number(element.id) + 1), 1),
+            Number(snap.get('nextElementId')) || 1
+          );
+          state.pendingId = nextId;
+          const record = { ...current, id: nextId }; delete record._kind;
+          transaction.set(collection.doc(String(nextId)), { elementJson: JSON.stringify(record), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+          changed.forEach((element) => {
+            const shifted = { ...element }; delete shifted._kind;
+            transaction.set(collection.doc(String(element.id)), { elementJson: JSON.stringify(shifted), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+          });
+          transaction.set(contentRef, { nextElementId: nextId + 1, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+        });
+        const replaceId = (element) => element.id === provisionalId ? { ...element, id: nextId } : element;
+        state.baseElements = state.baseElements.map(replaceId);
+        state.layoutElements = state.layoutElements.map(replaceId);
+        state.item = replaceId(state.item);
+        state.isNew = false;
+        elements = elements.map(replaceId);
+      } else {
+        const savedCurrent = state.savedElements.find((el) => el.id === current.id);
+        const currentRecord = { ...current }; delete currentRecord._kind;
+        const previousRecord = { ...(savedCurrent || {}) }; delete previousRecord._kind;
+        if (!changed.length && JSON.stringify(currentRecord) === JSON.stringify(previousRecord)) return;
+        const batch = db.batch();
+        [current, ...changed].forEach((item) => {
+          const record = { ...item }; delete record._kind;
+          batch.set(collection.doc(String(item.id)), { elementJson: JSON.stringify(record), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+        });
+        await batch.commit();
+      }
+      state.savedElements = state.layoutElements.map(cloneElement);
       const latest = state.layoutElements.find((el) => el.id === state.item.id);
       if (latest) {
         state.item = latest;
@@ -676,6 +710,13 @@
     if (!state) return;
     clearTimeout(textElementSaveTimer);
     state.item = { ...state.item, text: state.node.innerText.replace(/\r\n?/g, '\n') };
+    if (state.isNew && !state.item.text.trim()) {
+      if (textElementEditor === state) textElementEditor = null;
+      state.node.remove();
+      elements = state.baseElements.filter((element) => element.id !== state.item.id);
+      renderCanvas();
+      return;
+    }
     updateTextElementFlow(state);
     if (textElementEditor === state) textElementEditor = null;
     state.node.remove();
@@ -699,7 +740,7 @@
     editor.spellcheck = true;
     editor.textContent = String(item.text || '');
     const initialElements = elements.map(cloneElement);
-    const state = { boardId: selectedBoard.id, item: { ...item }, node: editor, baseHeight: Math.max(1, Number(item.h) || 1), baseElements: initialElements, savedElements: initialElements.map(cloneElement), layoutElements: initialElements.map(cloneElement), savePromise: Promise.resolve() };
+    const state = { boardId: selectedBoard.id, item: { ...item }, node: editor, isNew: Boolean(options.isNew), baseHeight: Math.max(1, Number(item.h) || 1), baseElements: initialElements, savedElements: initialElements.map(cloneElement), layoutElements: initialElements.map(cloneElement), savePromise: Promise.resolve() };
     textElementEditor = state;
     $('.sketch-drawing-area').append(editor);
     positionTextElementEditor();
@@ -727,6 +768,22 @@
     renderCanvas();
   }
 
+  function startBlankTextEditor(worldPoint, options = {}) {
+    if (!selectedBoard || !worldPoint) return;
+    closePageBodyEditor();
+    closeTextElementEditor();
+    const area = $('.sketch-drawing-area');
+    const item = {
+      type: 'com.impactyn.taskmanager.data.entities.SketchElement.TextBox', kind: 'textbox', _kind: 'textbox',
+      id: nextProvisionalTextId--, x: Number(worldPoint.x) || 0, y: Number(worldPoint.y) || 0,
+      w: Math.max(320, Math.min(1600, (area.clientWidth - 72) / zoomFactor)), h: 40, text: '',
+      fontSize: Number($('#board-font-size').value) || 20,
+      fontFamily: $('#board-font-family').value || 'Arial', colorArgb: activeColor, borderWidth: 0
+    };
+    elements = [...elements, item];
+    startTextElementEditor(item, { ...options, isNew: true });
+  }
+
   function updateTextElementFlow(state) {
     const text = state.node.innerText.replace(/\r\n?/g, '\n');
     const original = state.baseElements.find((el) => el.id === state.item.id);
@@ -747,6 +804,10 @@
     state.layoutElements = layout;
     state.item = layout.find((element) => element.id === original.id) || state.item;
     elements = elements.map((element) => layout.find((updated) => updated.id === element.id) || element);
+    if (selectedBoard?.id === state.boardId) {
+      selectedBoard.elementCount = elements.length;
+      $('#selected-board-meta').textContent = `${elements.length} elements · ${selectedBoard.sourceSection || selectedBoard.sourceNotebook || 'Firebase'}`;
+    }
     state.node.style.minHeight = `${Math.max(40, height * imageLayout.scale)}px`;
     if (selectedBoard?.id === state.boardId) {
       renderCanvas();
@@ -914,6 +975,7 @@
       editor.addEventListener('input', () => {
         state.text = editor.innerText.replace(/\r\n?/g, '\n');
         const oldHeight = Number(state.item.h) || 40;
+        editor.style.minHeight = `${Math.max(40, state.baseHeight * imageLayout.scale)}px`;
         const item = updateLocalPageBody(state, false);
         if (Math.abs(item.h - oldHeight) > 1) renderCanvas();
         $('#save-state').textContent = 'Saving…';
@@ -957,14 +1019,15 @@
   canvas.addEventListener('pointerdown', (event) => {
     if (!selectedBoard) return;
     const p = point(event);
-    if (activeTool === 'TEXT') {
+      if (activeTool === 'TEXT') {
       event.preventDefault();
       const textHit = [...elements].reverse().find((el) => el._kind === 'textbox' && (() => { const b = elementBounds(el); return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h; })());
       if (textHit && !textHit.isPageBody) {
         startTextElementEditor(textHit, { clientX: event.clientX, clientY: event.clientY });
         return;
       }
-      startPageBodyEditor(p, '', { clientX: event.clientX, clientY: event.clientY });
+      if (textHit?.isPageBody) startPageBodyEditor(p, '', { clientX: event.clientX, clientY: event.clientY });
+      else startBlankTextEditor(p, { clientX: event.clientX, clientY: event.clientY });
       return;
     }
     canvas.focus({ preventScroll: true });
@@ -983,7 +1046,8 @@
       if ((!hit || hit.isPageBody) && event.pointerType !== 'pen' && !event.shiftKey) {
         event.preventDefault();
         if (!hit) selection = new Set();
-        startPageBodyEditor(p, '', { clientX: event.clientX, clientY: event.clientY });
+        if (hit?.isPageBody) startPageBodyEditor(p, '', { clientX: event.clientX, clientY: event.clientY });
+        else startBlankTextEditor(p, { clientX: event.clientX, clientY: event.clientY });
         return;
       }
       if (!hit && event.pointerType === 'pen') {
