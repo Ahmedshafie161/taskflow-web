@@ -38,7 +38,7 @@
   let loadingLegacy = false;
   let drawing = false;
   let erase = false;
-  let activeTool = 'PEN';
+  let activeTool = 'SELECT';
   let activeColor = 0xFF1B1F1C;
   let zoomFactor = 1;
   let clipboardElements = [];
@@ -312,22 +312,26 @@
   }
 
   function renderCanvas() {
+    const area = $('.sketch-drawing-area');
+    if (!selectedBoard) { $('#empty-sketch').hidden = false; return; }
+    $('.sketch-drawing-area').dataset.pattern = String(selectedBoard.backgroundPattern || 'BLANK').toUpperCase();
+    $('#empty-sketch').hidden = elements.length > 0 || drawing;
+    const b = boundsFor(elements);
+    const worldW = Math.max(1, b.maxX - b.minX), worldH = Math.max(1, b.maxY - b.minY);
+    const scale = zoomFactor;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rectWidth = Math.max(area.clientWidth, Math.min(10000, Math.ceil(worldW * scale + 60)));
+    const rectHeight = Math.max(area.clientHeight, Math.min(10000, Math.ceil(worldH * scale + 60)));
+    if (canvas.style.width !== `${rectWidth}px`) canvas.style.width = `${rectWidth}px`;
+    if (canvas.style.height !== `${rectHeight}px`) canvas.style.height = `${rectHeight}px`;
     const rect = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
     if (!rect.width || !rect.height) return;
     if (canvas.width !== Math.round(rect.width * dpr) || canvas.height !== Math.round(rect.height * dpr)) {
       canvas.width = Math.round(rect.width * dpr); canvas.height = Math.round(rect.height * dpr);
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
-    if (!selectedBoard) { $('#empty-sketch').hidden = false; return; }
-    $('.sketch-drawing-area').dataset.pattern = String(selectedBoard.backgroundPattern || 'BLANK').toUpperCase();
-    $('#empty-sketch').hidden = elements.length > 0 || drawing;
-    const b = boundsFor(elements);
-    const worldW = Math.max(1, b.maxX - b.minX), worldH = Math.max(1, b.maxY - b.minY);
-    const fitScale = Math.min((rect.width - 30) / worldW, (rect.height - 30) / worldH, 1.4);
-    const scale = fitScale * zoomFactor;
-    const x = (rect.width - worldW * scale) / 2, y = (rect.height - worldH * scale) / 2;
+    const x = Math.max(30, (rect.width - worldW * scale) / 2), y = Math.max(30, (rect.height - worldH * scale) / 2);
     imageLayout = { scale, x, y, bounds: b };
     const zoomLabel = $('#zoom-label'); if (zoomLabel) zoomLabel.textContent = `${Math.round(zoomFactor * 100)}%`;
     if (!elements.length && !drawing) return;
@@ -560,10 +564,14 @@
   }
 
   function pageCenter() {
-    const rect = canvas.getBoundingClientRect();
+    const area = $('.sketch-drawing-area');
+    const canvasRect = canvas.getBoundingClientRect();
+    const areaRect = area.getBoundingClientRect();
+    const x = areaRect.left + area.clientWidth / 2 - canvasRect.left;
+    const y = areaRect.top + area.clientHeight / 2 - canvasRect.top;
     return {
-      x: (rect.width / 2 - imageLayout.x) / imageLayout.scale + imageLayout.bounds.minX,
-      y: (rect.height / 2 - imageLayout.y) / imageLayout.scale + imageLayout.bounds.minY
+      x: (x - imageLayout.x) / imageLayout.scale + imageLayout.bounds.minX,
+      y: (y - imageLayout.y) / imageLayout.scale + imageLayout.bounds.minY
     };
   }
 
@@ -572,7 +580,7 @@
     const area = $('.sketch-drawing-area');
     const canvasRect = canvas.getBoundingClientRect();
     const areaRect = area.getBoundingClientRect();
-    const box = existing ? elementBounds(existing) : { x: worldPoint.x, y: worldPoint.y, w: 280, h: 64 };
+    const box = existing ? elementBounds(existing) : { x: worldPoint.x, y: worldPoint.y, w: 400, h: 100 };
     const editor = document.createElement('textarea');
     editor.className = 'canvas-text-editor';
     editor.setAttribute('aria-label', 'Write on sketch page');
@@ -584,11 +592,14 @@
     editor.style.width = `${Math.max(180, Math.min(540, box.w * imageLayout.scale))}px`;
     editor.style.height = `${Math.max(48, Math.min(300, box.h * imageLayout.scale))}px`;
     editor.style.fontFamily = family;
-    editor.style.fontSize = `${Math.max(10, size * imageLayout.scale)}px`;
+    editor.style.fontSize = `${Math.max(15, size * imageLayout.scale)}px`;
     editor.style.color = existing ? color(existing.colorArgb) : color(activeColor);
     area.append(editor);
     let committed = false;
-    const close = () => { if (editor.isConnected) editor.remove(); canvas.focus({ preventScroll: true }); };
+    const close = () => {
+      if (editor.isConnected) editor.remove();
+      if (!$('.canvas-text-editor')) canvas.focus({ preventScroll: true });
+    };
     const commit = async () => {
       if (committed) return;
       committed = true;
@@ -631,21 +642,35 @@
     const p = point(event);
     if (activeTool === 'TEXT') {
       event.preventDefault();
+      $('.canvas-text-editor')?.blur();
       startTextEditor(p);
       return;
     }
     canvas.focus({ preventScroll: true });
-    canvas.setPointerCapture(event.pointerId);
     if(activeTool==='IMAGE'){const url=prompt('Paste an image, GIF, video, or document URL:');if(url?.trim()){const u=url.trim();const mime=u.toLowerCase().match(/\.(gif|png|jpe?g|webp|svg|mp4|webm|pdf)(?:\?|$)/)?.[1]||'';const map={jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',gif:'image/gif',webp:'image/webp',svg:'image/svg+xml',mp4:'video/mp4',webm:'video/webm',pdf:'application/pdf'};saveElement({_kind:'image',type:'com.impactyn.taskmanager.data.entities.SketchElement.Image',x:p.x,y:p.y,w:480,h:280,uriString:u,mimeType:map[mime]||'',mediaName:u.split('/').pop()||'Linked media'});}return;}
     if(activeTool==='TREE'){const selected=elements.find(el=>selection.has(el.id)&&el._kind==='treenode');const id=elements.reduce((m,el)=>Math.max(m,el.id+1),1);const node={_kind:'treenode',type:'com.impactyn.taskmanager.data.entities.SketchElement.TreeNode',id,parentId:selected?.id??null,x:p.x,y:p.y,w:180,h:68,text:selected?'Decision':'Root decision',colorArgb:activeColor,orientation:'VERTICAL',collapsed:false};saveElement(node);return;}
     if(activeTool==='CONNECTOR'){const hit=[...elements].reverse().find(el=>{const b=elementBounds(el);return p.x>=b.x&&p.x<=b.x+b.w&&p.y>=b.y&&p.y<=b.y+b.h;});if(!hit)return showToast('Tap a shape or text box to start a connector');if(connectorStartId===null){connectorStartId=hit.id;return showToast('Now tap the connected shape');}if(connectorStartId!==hit.id){saveElement({_kind:'connector',type:'com.impactyn.taskmanager.data.entities.SketchElement.Connector',fromId:connectorStartId,toId:hit.id,colorArgb:activeColor,strokeWidth:2,curveStyle:'STRAIGHT'});}connectorStartId=null;return;}
     if (activeTool === 'SELECT') {
       const hit = [...elements].reverse().find((el) => { const b=elementBounds(el); return p.x>=b.x-6&&p.x<=b.x+b.w+6&&p.y>=b.y-6&&p.y<=b.y+b.h+6; });
-      if (event.shiftKey) {
-        if (hit) { if (selection.has(hit.id)) selection.delete(hit.id); else selection.add(hit.id); }
-      } else selection = hit ? new Set([hit.id]) : new Set();
-      moveSnapshot=elements.map(el=>({...el,points:el.points?.map(pt=>({...pt}))})); moveStart = hit && selection.has(hit.id) ? p : null; drawing = Boolean(moveStart); renderCanvas(); return;
+      if (!hit && event.pointerType !== 'pen' && !event.shiftKey) {
+        event.preventDefault();
+        $('.canvas-text-editor')?.blur();
+        selection = new Set();
+        renderCanvas();
+        startTextEditor(p);
+        return;
+      }
+      if (!hit && event.pointerType === 'pen') {
+        // Keep stylus writing available in the default click-to-type mode.
+      } else {
+        canvas.setPointerCapture(event.pointerId);
+        if (event.shiftKey) {
+          if (hit) { if (selection.has(hit.id)) selection.delete(hit.id); else selection.add(hit.id); }
+        } else selection = hit ? new Set([hit.id]) : new Set();
+        moveSnapshot=elements.map(el=>({...el,points:el.points?.map(pt=>({...pt}))})); moveStart = hit && selection.has(hit.id) ? p : null; drawing = Boolean(moveStart); renderCanvas(); return;
+      }
     }
+    canvas.setPointerCapture(event.pointerId);
     if (activeTool === 'LASSO') {
       lassoStart = p; lassoRect = { x:p.x, y:p.y, w:0, h:0 }; drawing = true; renderCanvas(); return;
     }
@@ -830,10 +855,24 @@
   $('#board-paste').addEventListener('click', pasteButtonAction);
   $('#board-font-size').addEventListener('change', (event) => { event.target.value = String(Math.max(10, Math.min(96, Number(event.target.value) || 20))); formatSelectedText({ fontSize: Number(event.target.value) }); });
   $('#board-font-family').addEventListener('change', (event) => formatSelectedText({ fontFamily: event.target.value }));
-  $('#zoom-in').addEventListener('click', () => { zoomFactor = Math.min(2.5, +(zoomFactor + 0.1).toFixed(2)); renderCanvas(); });
-  $('#zoom-out').addEventListener('click', () => { zoomFactor = Math.max(0.4, +(zoomFactor - 0.1).toFixed(2)); renderCanvas(); });
-  $('#zoom-label').addEventListener('click', () => { zoomFactor = 1; renderCanvas(); });
-  $('#zoom-fit').addEventListener('click', () => { zoomFactor = 1; renderCanvas(); });
+  function updateZoom(nextZoom, fit = false) {
+    const area = $('.sketch-drawing-area');
+    const oldCenter = pageCenter();
+    if (fit) {
+      const bounds = boundsFor(elements);
+      const width = Math.max(1, bounds.maxX - bounds.minX), height = Math.max(1, bounds.maxY - bounds.minY);
+      zoomFactor = Math.max(0.1, Math.min(1.4, (area.clientWidth - 60) / width, (area.clientHeight - 60) / height));
+    } else zoomFactor = Math.max(0.1, Math.min(4, Number(nextZoom) || 1));
+    renderCanvas();
+    if (fit) { area.scrollTo({ left: 0, top: 0 }); return; }
+    const x = imageLayout.x + (oldCenter.x - imageLayout.bounds.minX) * imageLayout.scale;
+    const y = imageLayout.y + (oldCenter.y - imageLayout.bounds.minY) * imageLayout.scale;
+    area.scrollTo({ left: Math.max(0, x - area.clientWidth / 2), top: Math.max(0, y - area.clientHeight / 2) });
+  }
+  $('#zoom-in').addEventListener('click', () => updateZoom(zoomFactor + 0.1));
+  $('#zoom-out').addEventListener('click', () => updateZoom(zoomFactor - 0.1));
+  $('#zoom-label').addEventListener('click', () => updateZoom(1));
+  $('#zoom-fit').addEventListener('click', () => updateZoom(zoomFactor, true));
   $('#sketch-exit').addEventListener('click', () => document.querySelector('[data-page="Tasks"]').click());
   $('#sketch-fullscreen').addEventListener('click', async () => {
     try {
@@ -881,7 +920,7 @@
     else if (event.clipboardData?.items?.length) showToast('Paste text here; use Media link for an image or video URL');
   });
   $('#save-sketch').addEventListener('click', () => showToast(lastSaveError ? `Save failed: ${lastSaveError}` : 'Sketches save as you draw'));
-  new ResizeObserver(renderCanvas).observe(canvas);
+  new ResizeObserver(renderCanvas).observe($('.sketch-drawing-area'));
   new MutationObserver(renderCanvas).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   window.addEventListener('taskflow:sketches-open', () => { renderCanvas(); if (selectedBoard) selectBoard(selectedBoard); });
   window.addEventListener('resize', renderCanvas);
