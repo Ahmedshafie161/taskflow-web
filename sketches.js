@@ -714,6 +714,10 @@
       if (textElementEditor === state) textElementEditor = null;
       state.node.remove();
       elements = state.baseElements.filter((element) => element.id !== state.item.id);
+      if (selectedBoard?.id === state.boardId) {
+        selectedBoard.elementCount = elements.length;
+        $('#selected-board-meta').textContent = `${elements.length} elements · ${selectedBoard.sourceSection || selectedBoard.sourceNotebook || 'Firebase'}`;
+      }
       renderCanvas();
       return;
     }
