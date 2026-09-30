@@ -195,19 +195,11 @@
     try {
       let url = source;
       if (source.startsWith('supabase-media://')) {
-        const user = await requireMediaOwner();
-        const token = await user.getIdToken();
         const objectPath = source.slice('supabase-media://'.length).split('/').map((part) => {
           try { return decodeURIComponent(part.replace(/\+/g, '%2B')); } catch { return part; }
         }).join('/');
-        const response = await fetch(`${supabaseUrl}/functions/v1/sign-sketch-media`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', apikey: supabasePublishableKey, Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ objectPath })
-        });
-        if (!response.ok) throw new Error(`Media signing failed (${response.status})`);
-        const data = await response.json();
-        url = data.signedUrl.startsWith('/') ? `${supabaseUrl}${data.signedUrl}` : data.signedUrl;
+        const encodedPath = objectPath.split('/').map(encodeURIComponent).join('/');
+        url = supabaseUrl + '/storage/v1/object/public/sketch-media/' + encodedPath;
       }
       const mime = mediaMime(el);
       if (!mime.startsWith('image/') && !mime.startsWith('video/')) {
@@ -225,12 +217,9 @@
       console.warn('Could not load external sketch media', source, error);
       loadedImages.set(source, null); showLinks(); renderCanvas();
       if (source.startsWith('supabase-media://')) {
-        const authorized = isMediaOwner(auth.currentUser);
         $('#media-auth-actions').hidden = false;
-        $('#media-auth-state').textContent = location.protocol === 'file:'
-          ? 'Open this page over HTTPS or localhost, then sign in with Google to load private images.'
-          : authorized ? `Private media could not load: ${error.message}` : `Sign in with ${mediaOwnerEmail} to load private images. ${error.message}`;
-        $('#media-sign-in').hidden = authorized;
+        $('#media-auth-state').textContent = 'Media could not load: ' + error.message;
+        $('#media-sign-in').hidden = true;
       }
     }
   }
