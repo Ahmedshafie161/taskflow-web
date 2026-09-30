@@ -630,6 +630,7 @@
     if (!selectedBoard) return;
     const p = point(event);
     if (activeTool === 'TEXT') {
+      event.preventDefault();
       startTextEditor(p);
       return;
     }
