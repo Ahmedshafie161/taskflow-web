@@ -419,7 +419,7 @@
         const section = Boolean(board.isSection);
         const hasChildren = Boolean(children.get(board.id)?.length);
         const collapsed = !query && collapsedBoardIds.has(board.id);
-        if ((!query || matches.has(board.id)) && ancestorsExpanded) rows.push(`<div class="board-entry ${section ? 'section-entry' : ''} ${selectedBoard?.id === board.id ? 'active' : ''}" style="padding-left:${8 + Math.min(depth, 7) * 17}px" ${section ? `data-section-id="${escapeHtml(board.id)}"` : `data-board-id="${escapeHtml(board.id)}" draggable="true"`} title="${escapeHtml(board.name)}">${hasChildren ? `<button class="tree-toggle" type="button" data-toggle-id="${escapeHtml(board.id)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(board.name)}" aria-expanded="${!collapsed}">${collapsed ? '▸' : '▾'}</button>` : `<span class="tree-toggle" aria-hidden="true">${section ? '▸' : (depth ? '↳' : '▱')}</span>`}<span class="board-name">${escapeHtml(board.name || 'Untitled board')}</span><span class="board-count">${count || ''}</span></div>`);
+        if ((!query || matches.has(board.id)) && ancestorsExpanded) rows.push(`<div class="board-entry ${section ? 'section-entry' : ''} ${selectedBoard?.id === board.id ? 'active' : ''}" style="padding-left:${8 + Math.min(depth, 7) * 17}px" data-board-id="${escapeHtml(board.id)}" ${section ? 'data-section="true"' : ''} draggable="true" title="${escapeHtml(board.name)}">${hasChildren ? `<button class="tree-toggle" type="button" data-toggle-id="${escapeHtml(board.id)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(board.name)}" aria-expanded="${!collapsed}">${collapsed ? '▸' : '▾'}</button>` : `<span class="tree-toggle" aria-hidden="true">${section ? '▸' : (depth ? '↳' : '▱')}</span>`}<span class="board-name">${escapeHtml(board.name || 'Untitled board')}</span><span class="board-count">${count || ''}</span></div>`);
         append(board.id, depth + 1, ancestorsExpanded && (!collapsed || Boolean(query)));
       }
     }
@@ -556,16 +556,17 @@
   });
 
   boardTree.addEventListener('click', (event) => {
-    const toggle = event.target.closest('[data-toggle-id]');
+    const entry = event.target.closest('.board-entry');
+    const toggle = event.target.closest('[data-toggle-id]') || (entry?.classList.contains('section-entry') ? entry.querySelector('[data-toggle-id]') : null);
     if (toggle) {
       event.stopPropagation();
       const id = toggle.dataset.toggleId;
       collapsedBoardIds.has(id) ? collapsedBoardIds.delete(id) : collapsedBoardIds.add(id);
-      localStorage.setItem('taskflow-sketch-collapsed-pages', JSON.stringify([...collapsedBoardIds]));
+      try { localStorage.setItem('taskflow-sketch-collapsed-pages', JSON.stringify([...collapsedBoardIds])); } catch { /* Collapse still works when storage is unavailable. */ }
       buildTree(); return;
     }
-    const entry = event.target.closest('[data-board-id]');
-    if (entry) { const board = boards.find((item) => item.id === entry.dataset.boardId); if (board) selectBoard(board); }
+    const pageEntry = event.target.closest('[data-board-id]:not([data-section="true"])');
+    if (pageEntry) { const board = boards.find((item) => item.id === pageEntry.dataset.boardId); if (board) selectBoard(board); }
   });
 
   function descendantIds(rootId) {
@@ -573,6 +574,22 @@
     let changed = true;
     while (changed) { changed = false; for (const board of boards) if (board.parentBoardId && found.has(board.parentBoardId) && !found.has(board.id)) { found.add(board.id); changed = true; } }
     return found;
+  }
+  async function reparentBoard(movingId, parentId = null) {
+    const moving = boards.find((item) => item.id === movingId);
+    const parent = parentId ? boards.find((item) => item.id === parentId) : null;
+    if (!moving || (parentId && !parent) || parentId === movingId || (parentId && descendantIds(movingId).has(parentId))) return;
+    const subtree = descendantIds(movingId);
+    const nextLevel = parent ? (Number(parent.hierarchyLevel) || 0) + 1 : 0;
+    const delta = nextLevel - (Number(moving.hierarchyLevel) || 0);
+    try {
+      const batch = db.batch(), now = firebase.firestore.FieldValue.serverTimestamp();
+      batch.update(boardsRef.doc(moving.id), { parentBoardId: parent?.id || null, hierarchyLevel: nextLevel, orderIndex: Date.now(), updatedAt: now });
+      for (const board of boards) if (subtree.has(board.id) && board.id !== moving.id) batch.update(boardsRef.doc(board.id), { hierarchyLevel: Math.max(0, (Number(board.hierarchyLevel) || 0) + delta), updatedAt: now });
+      await batch.commit();
+      if (parent) collapsedBoardIds.delete(parent.id);
+      buildTree(); showToast(parent ? `Moved “${moving.name}” under “${parent.name}”` : `Moved “${moving.name}” to notebook root`);
+    } catch (error) { notice(`Could not move page: ${error.message}`); }
   }
   boardTree.addEventListener('dragstart', (event) => {
     const entry = event.target.closest('[data-board-id]'); if (!entry) return;
@@ -583,24 +600,58 @@
   boardTree.addEventListener('dragover', (event) => { const entry = event.target.closest('[data-board-id]'); if (!entry || !draggedBoardId || entry.dataset.boardId === draggedBoardId || descendantIds(draggedBoardId).has(entry.dataset.boardId)) return; event.preventDefault(); boardTree.querySelectorAll('.drop-target').forEach((item) => item.classList.remove('drop-target')); entry.classList.add('drop-target'); if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'; });
   boardTree.addEventListener('drop', async (event) => {
     const entry = event.target.closest('[data-board-id]'); if (!entry || !draggedBoardId) return;
-    event.preventDefault(); const moving = boards.find((item) => item.id === draggedBoardId), parent = boards.find((item) => item.id === entry.dataset.boardId);
-    if (!moving || !parent || descendantIds(moving.id).has(parent.id)) return;
-    const subtree = descendantIds(moving.id); const nextLevel = (Number(parent.hierarchyLevel) || 0) + 1; const delta = nextLevel - (Number(moving.hierarchyLevel) || 0);
-    try {
-      const batch = db.batch(); const now = firebase.firestore.FieldValue.serverTimestamp();
-      batch.update(boardsRef.doc(moving.id), { parentBoardId: parent.id, hierarchyLevel: nextLevel, orderIndex: Date.now(), updatedAt: now });
-      for (const board of boards) if (subtree.has(board.id) && board.id !== moving.id) batch.update(boardsRef.doc(board.id), { hierarchyLevel: Math.max(0, (Number(board.hierarchyLevel) || 0) + delta), updatedAt: now });
-      await batch.commit(); collapsedBoardIds.delete(parent.id); buildTree(); showToast(`Moved “${moving.name}” under “${parent.name}”`);
-    } catch (error) { notice(`Could not move page: ${error.message}`); }
+    event.preventDefault(); await reparentBoard(draggedBoardId, entry.dataset.boardId);
   });
   boardTree.addEventListener('dragover', (event) => { if (draggedBoardId && event.target === boardTree) event.preventDefault(); });
   boardTree.addEventListener('drop', async (event) => {
     if (event.target !== boardTree || !draggedBoardId) return;
-    event.preventDefault(); const moving = boards.find((item) => item.id === draggedBoardId); if (!moving || !moving.parentBoardId) return;
-    const subtree = descendantIds(moving.id), delta = -(Number(moving.hierarchyLevel) || 0);
-    try { const batch = db.batch(), now = firebase.firestore.FieldValue.serverTimestamp(); batch.update(boardsRef.doc(moving.id), { parentBoardId: null, hierarchyLevel: 0, orderIndex: Date.now(), updatedAt: now }); for (const board of boards) if (subtree.has(board.id) && board.id !== moving.id) batch.update(boardsRef.doc(board.id), { hierarchyLevel: Math.max(0, (Number(board.hierarchyLevel) || 0) + delta), updatedAt: now }); await batch.commit(); showToast(`Moved “${moving.name}” to notebook root`); }
-    catch (error) { notice(`Could not move page: ${error.message}`); }
+    event.preventDefault(); await reparentBoard(draggedBoardId, null);
   });
+
+  // HTML drag-and-drop is inconsistent on touch devices. Long-press starts a
+  // pointer drag on tablets; dropping a page on another page reparents it.
+  let touchDrag = null, touchDragTimer = null, suppressTreeClick = false;
+  function clearTouchDrag() {
+    clearTimeout(touchDragTimer); touchDragTimer = null;
+    boardTree.querySelectorAll('.dragging,.drop-target').forEach((entry) => entry.classList.remove('dragging', 'drop-target'));
+    touchDrag = null; draggedBoardId = null;
+  }
+  boardTree.addEventListener('pointerdown', (event) => {
+    if (event.pointerType !== 'touch' || event.target.closest('.tree-toggle,[data-toggle-id]')) return;
+    const entry = event.target.closest('[data-board-id]'); if (!entry) return;
+    touchDrag = { id: entry.dataset.boardId, startX: event.clientX, startY: event.clientY, active: false, targetId: null };
+    touchDragTimer = setTimeout(() => {
+      if (!touchDrag) return;
+      touchDrag.active = true; draggedBoardId = touchDrag.id; entry.classList.add('dragging');
+      if (navigator.vibrate) navigator.vibrate(20);
+    }, 350);
+  });
+  boardTree.addEventListener('pointermove', (event) => {
+    if (!touchDrag) return;
+    const distance = Math.hypot(event.clientX - touchDrag.startX, event.clientY - touchDrag.startY);
+    if (!touchDrag.active && distance > 12) { clearTimeout(touchDragTimer); touchDragTimer = null; touchDrag = null; return; }
+    if (!touchDrag.active) return;
+    event.preventDefault();
+    const over = document.elementFromPoint(event.clientX, event.clientY)?.closest('.board-entry[data-board-id]');
+    const valid = over && over.dataset.boardId !== touchDrag.id && !descendantIds(touchDrag.id).has(over.dataset.boardId);
+    boardTree.querySelectorAll('.drop-target').forEach((entry) => entry.classList.remove('drop-target'));
+    touchDrag.targetId = valid ? over.dataset.boardId : null;
+    if (valid) over.classList.add('drop-target');
+  }, { passive: false });
+  boardTree.addEventListener('pointerup', async () => {
+    if (!touchDrag) return;
+    const drag = touchDrag;
+    if (drag.active) {
+      suppressTreeClick = true;
+      if (drag.targetId) await reparentBoard(drag.id, drag.targetId);
+    }
+    clearTouchDrag();
+  });
+  boardTree.addEventListener('pointercancel', clearTouchDrag);
+  boardTree.addEventListener('click', (event) => {
+    if (!suppressTreeClick) return;
+    suppressTreeClick = false; event.preventDefault(); event.stopImmediatePropagation();
+  }, true);
 
   $('#new-board').addEventListener('click', async () => {
     const name = prompt('Name this sketch board or page:');
@@ -1313,20 +1364,43 @@
     startPageBodyEditor(pageCenter(), text.trim(), { append: true });
   }
   async function pasteButtonAction() {
-    try {
-      if (navigator.clipboard?.read) {
+    if (!selectedBoard) return showToast('Choose a page before pasting');
+    if (navigator.clipboard?.read) {
+      try {
         const clipboardItems = await navigator.clipboard.read();
         for (const clipboardItem of clipboardItems) {
           const mime = clipboardItem.types.find((type) => type.startsWith('image/'));
           if (mime) return pasteImage(await clipboardItem.getType(mime));
+          if (clipboardItem.types.includes('text/html')) {
+            const html = await (await clipboardItem.getType('text/html')).text();
+            const image = imageBlobFromHtml(html);
+            if (image) return pasteImage(image);
+          }
         }
-      }
+      } catch (error) { console.info('Clipboard image read needs keyboard paste fallback:', error); }
+    }
+    try {
       const text = await navigator.clipboard?.readText();
+      const image = imageBlobFromHtml(text || '');
+      if (image) return pasteImage(image);
       if (text && clipboardElements.length && text === clipboardPlain) return pasteElements();
       if (text?.trim()) return pasteText(text);
-    } catch { /* Clipboard permission may be unavailable; use the local sketch clipboard below. */ }
+    } catch (error) { console.info('Clipboard text read unavailable:', error); }
     if (clipboardElements.length) return pasteElements();
-    showToast('Use Ctrl/Cmd+V after copying text or an item');
+    showToast('Tap Paste, or press Ctrl/Cmd+V to insert the copied image');
+  }
+
+  function imageBlobFromHtml(html) {
+    if (!html || !/<img\b/i.test(html)) return null;
+    const match = html.match(/<img\b[^>]*\bsrc\s*=\s*(["'])(data:image\/[^"']+)\1/i);
+    if (!match) return null;
+    const dataUrl = match[2];
+    const data = dataUrl.match(/^data:(image\/[a-z0-9.+-]+)(;base64)?,([\s\S]*)$/i);
+    if (!data) return null;
+    try {
+      const bytes = data[2] ? Uint8Array.from(atob(data[3]), (character) => character.charCodeAt(0)) : new TextEncoder().encode(decodeURIComponent(data[3]));
+      return new Blob([bytes], { type: data[1] });
+    } catch { return null; }
   }
 
   async function pasteImage(blob) {
@@ -1406,7 +1480,7 @@
   $('#toggle-board-tree').addEventListener('click', () => {
     allPagesCollapsed = !allPagesCollapsed;
     collapsedBoardIds = new Set(allPagesCollapsed ? boards.filter((board) => boards.some((item) => item.parentBoardId === board.id)).map((board) => board.id) : []);
-    localStorage.setItem('taskflow-sketch-collapsed-pages', JSON.stringify([...collapsedBoardIds]));
+    try { localStorage.setItem('taskflow-sketch-collapsed-pages', JSON.stringify([...collapsedBoardIds])); } catch { /* The current view still updates without persisted preference. */ }
     $('#toggle-board-tree').textContent = allPagesCollapsed ? '⊞' : '⊖';
     $('#toggle-board-tree').title = allPagesCollapsed ? 'Expand all pages' : 'Collapse all pages';
     $('#toggle-board-tree').setAttribute('aria-label', allPagesCollapsed ? 'Expand all pages' : 'Collapse all pages'); buildTree();
@@ -1485,8 +1559,12 @@
   window.addEventListener('paste', (event) => {
     if (!document.body.classList.contains('sketch-active') || !selectedBoard) return;
     const clipboardItems = [...(event.clipboardData?.items || [])];
-    const imageItem = clipboardItems.find((item) => item.type.startsWith('image/'));
-    if (imageItem) { event.preventDefault(); void pasteImage(imageItem.getAsFile()); return; }
+    const imageItem = clipboardItems.find((item) => item.type.toLowerCase().startsWith('image/'));
+    const imageFile = imageItem?.getAsFile() || event.clipboardData?.files?.[0];
+    if (imageFile?.type?.startsWith('image/')) { event.preventDefault(); void pasteImage(imageFile); return; }
+    const html = event.clipboardData?.getData('text/html') || '';
+    const htmlImage = imageBlobFromHtml(html);
+    if (htmlImage) { event.preventDefault(); void pasteImage(htmlImage); return; }
     if (event.target.matches?.('input,textarea,select,[contenteditable]')) return;
     const text = event.clipboardData?.getData('text/plain') || '';
     if (text && clipboardElements.length && text === clipboardPlain) { event.preventDefault(); pasteElements(); }
