@@ -56,6 +56,8 @@
   let currentStroke = null;
   let pageBodyEditor = null;
   let pageBodySaveTimer = null;
+  let textElementEditor = null;
+  let textElementSaveTimer = null;
   let imageLayout = { scale: 1, x: 0, y: 0, bounds: { minX: 0, minY: 0 } };
   let lastSaveError = '';
 
@@ -218,6 +220,7 @@
   function drawElement(el, imagesOnly = false) {
     const kind = el._kind;
     if (el.isPageBody && pageBodyEditor?.boardId === selectedBoard?.id && pageBodyEditor.node.isConnected) return;
+    if (textElementEditor?.boardId === selectedBoard?.id && textElementEditor.item.id === el.id && textElementEditor.node.isConnected) return;
     const ink = color(el.colorArgb);
     const width = Math.max(1, Number(el.strokeWidth) || 2);
     ctx.strokeStyle = ink;
@@ -338,6 +341,7 @@
     imageLayout = { scale, x, y, bounds: b };
     const zoomLabel = $('#zoom-label'); if (zoomLabel) zoomLabel.textContent = `${Math.round(zoomFactor * 100)}%`;
     positionPageBodyEditor();
+    positionTextElementEditor();
     if (!elements.length && !drawing) return;
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (x - b.minX * scale), dpr * (y - b.minY * scale));
     const treeNodes = new Map(elements.filter((element) => element._kind === 'treenode').map((element) => [element.id, element]));
@@ -435,6 +439,12 @@
         incoming[index] = pageBodyEditor.item;
       } else if (draft.text || draft.id) incoming.push(draft);
     }
+    if (textElementEditor?.boardId === selectedBoard?.id && textElementEditor.node.isConnected) {
+      const draft = { ...textElementEditor.item, text: textElementEditor.node.innerText.replace(/\r\n?/g, '\n') };
+      textElementEditor.item = draft;
+      const index = incoming.findIndex((el) => el.id === draft.id);
+      if (index >= 0) incoming[index] = { ...incoming[index], ...draft };
+    }
     elements = incoming.sort((a, b) => a.id - b.id);
     if (selectedBoard) selectedBoard.elementCount = elements.length;
     $('#selected-board-meta').textContent = `${elements.length} elements · ${selectedBoard?.sourceSection || selectedBoard?.sourceNotebook || 'Firebase'}`;
@@ -458,6 +468,7 @@
 
   function selectBoard(board) {
     closePageBodyEditor();
+    closeTextElementEditor();
     if (boardListener) boardListener();
     if (contentListener) contentListener();
     selectedBoard = board;
@@ -590,6 +601,97 @@
     state.node.style.fontSize = `${Math.max(8, (Number(box.fontSize) || 20) * imageLayout.scale)}px`;
     state.node.style.lineHeight = `${((Number(box.fontSize) || 20) + 4) * imageLayout.scale}px`;
     state.node.style.color = color(box.colorArgb);
+  }
+
+  function positionTextElementEditor() {
+    const state = textElementEditor;
+    if (!state?.node.isConnected || state.boardId !== selectedBoard?.id) return;
+    const box = state.item;
+    state.node.style.left = `${canvas.offsetLeft + imageLayout.x + (box.x - imageLayout.bounds.minX) * imageLayout.scale}px`;
+    state.node.style.top = `${canvas.offsetTop + imageLayout.y + (box.y - imageLayout.bounds.minY) * imageLayout.scale}px`;
+    state.node.style.width = `${Math.max(100, box.w * imageLayout.scale)}px`;
+    state.node.style.minHeight = `${Math.max(40, box.h * imageLayout.scale)}px`;
+    state.node.style.fontFamily = box.fontFamily || 'Arial';
+    state.node.style.fontSize = `${Math.max(8, (Number(box.fontSize) || 20) * imageLayout.scale)}px`;
+    state.node.style.lineHeight = `${((Number(box.fontSize) || 20) + 4) * imageLayout.scale}px`;
+    state.node.style.color = color(box.colorArgb);
+  }
+
+  function queueTextElementSave(state) {
+    clearTimeout(textElementSaveTimer);
+    textElementSaveTimer = setTimeout(() => { void persistTextElement(state); }, 600);
+  }
+
+  function persistTextElement(state) {
+    state.savePromise = (state.savePromise || Promise.resolve()).catch(() => {}).then(async () => {
+      const item = { ...state.item, text: state.node.isConnected ? state.node.innerText.replace(/\r\n?/g, '\n') : state.item.text };
+      const record = { ...item }; delete record._kind;
+      await boardsRef.doc(state.boardId).collection('elements').doc(String(item.id)).set({ elementJson: JSON.stringify(record), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+      state.item = item;
+      state.lastSavedText = item.text;
+      const index = elements.findIndex((el) => el.id === item.id);
+      if (index >= 0) elements[index] = item;
+      $('#save-state').textContent = 'Saved to shared Firebase';
+    }).catch((error) => {
+      lastSaveError = error.message;
+      $('#save-state').textContent = 'Save failed';
+      notice(`Could not save text: ${error.message}`);
+    });
+    return state.savePromise;
+  }
+
+  function closeTextElementEditor(state = textElementEditor) {
+    if (!state) return;
+    clearTimeout(textElementSaveTimer);
+    state.item = { ...state.item, text: state.node.innerText.replace(/\r\n?/g, '\n') };
+    if (textElementEditor === state) textElementEditor = null;
+    state.node.remove();
+    const index = elements.findIndex((el) => el.id === state.item.id);
+    if (index >= 0) elements[index] = state.item;
+    void persistTextElement(state);
+    renderCanvas();
+  }
+
+  function startTextElementEditor(item) {
+    if (!selectedBoard || !item || item._kind !== 'textbox' || item.isPageBody) return;
+    closePageBodyEditor();
+    closeTextElementEditor();
+    selection = new Set([item.id]);
+    const editor = document.createElement('div');
+    editor.className = 'page-body-editor text-element-editor';
+    editor.contentEditable = 'plaintext-only';
+    editor.setAttribute('role', 'textbox');
+    editor.setAttribute('aria-label', 'Edit sketch text');
+    editor.setAttribute('aria-multiline', 'true');
+    editor.spellcheck = true;
+    editor.textContent = String(item.text || '');
+    const state = { boardId: selectedBoard.id, item: { ...item }, node: editor, lastSavedText: String(item.text || ''), savePromise: Promise.resolve() };
+    textElementEditor = state;
+    $('.sketch-drawing-area').append(editor);
+    positionTextElementEditor();
+    editor.addEventListener('input', () => {
+      state.item = { ...state.item, text: editor.innerText.replace(/\r\n?/g, '\n') };
+      const index = elements.findIndex((el) => el.id === item.id);
+      if (index >= 0) elements[index] = state.item;
+      $('#save-state').textContent = 'Saving…';
+      queueTextElementSave(state);
+    });
+    editor.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' || (event.key === 'Enter' && (event.metaKey || event.ctrlKey))) {
+        event.preventDefault(); closeTextElementEditor(state);
+      }
+    });
+    editor.addEventListener('blur', () => {
+      if (textElementEditor === state) closeTextElementEditor(state);
+    }, { once: true });
+    editor.addEventListener('paste', (event) => {
+      const plain = event.clipboardData?.getData('text/plain');
+      if (plain == null) return;
+      event.preventDefault(); document.execCommand('insertText', false, plain);
+    });
+    editor.focus({ preventScroll: true });
+    caretAtEnd(editor);
+    renderCanvas();
   }
 
   function caretAtEnd(node) {
@@ -804,7 +906,7 @@
     if (!selectedBoard) return;
     const p = point(event);
     const hit = [...elements].reverse().find((el) => el._kind === 'textbox' && (() => { const b = elementBounds(el); return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h; })());
-    if (hit) { event.preventDefault(); startPageBodyEditor(p, '', { clientX: event.clientX, clientY: event.clientY }); }
+    if (hit) { event.preventDefault(); startTextElementEditor(hit); }
   });
   canvas.addEventListener('pointermove', (event) => {
     if (!drawing) return; const p=point(event);
@@ -952,7 +1054,7 @@
     try {recordUndo(before);const col=boardsRef.doc(selectedBoard.id).collection('elements');const old=await col.get();for(let i=0;i<old.docs.length;i+=400){const batch=db.batch();old.docs.slice(i,i+400).forEach(doc=>batch.delete(doc.ref));await batch.commit();}for(let i=0;i<updated.length;i+=400){const batch=db.batch();updated.slice(i,i+400).forEach(el=>{const item={...el};delete item._kind;batch.set(col.doc(String(item.id)),{elementJson:JSON.stringify(item),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});});await batch.commit();}$('#save-state').textContent='Saved to shared Firebase';}
     catch(error){notice(`Could not save moved elements: ${error.message}`);}
   }
-  document.querySelectorAll('[data-tool]').forEach(button=>button.addEventListener('click',()=>{activeTool=button.dataset.tool;erase=activeTool==='ERASER';document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('active',b===button));canvas.style.cursor=activeTool==='SELECT'?'move':activeTool==='LASSO'?'crosshair':'crosshair';}));
+  document.querySelectorAll('[data-tool]').forEach(button=>button.addEventListener('click',()=>{activeTool=button.dataset.tool;erase=activeTool==='ERASER';document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('active',b===button));canvas.style.cursor=activeTool==='SELECT'?'move':activeTool==='LASSO'?'crosshair':'crosshair';if(activeTool==='TEXT'&&selectedBoard)startPageBodyEditor(pageCenter());}));
   const ribbonGroups = { draw: ['draw', 'shapes'], insert: ['insert'], format: ['format'], page: ['page'], edit: ['edit'], view: ['view'] };
   document.querySelectorAll('[data-ribbon-tab]').forEach((button) => button.addEventListener('click', () => {
     const tab = button.dataset.ribbonTab;
@@ -968,6 +1070,7 @@
   $('#toggle-board-panel').addEventListener('click', () => $('.sketch-layout').classList.toggle('boards-hidden'));
   $('#board-copy').addEventListener('click', copySelection);
   $('#board-paste').addEventListener('click', pasteButtonAction);
+  $('#board-delete-selection').addEventListener('click', deleteSelection);
   $('#board-font-size').addEventListener('change', (event) => { event.target.value = String(Math.max(10, Math.min(96, Number(event.target.value) || 20))); formatSelectedText({ fontSize: Number(event.target.value) }); });
   $('#board-font-family').addEventListener('change', (event) => formatSelectedText({ fontFamily: event.target.value }));
   function updateZoom(nextZoom, fit = false) {
