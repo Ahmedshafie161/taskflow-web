@@ -720,6 +720,7 @@
     const original = state.baseElements.find((el) => el.id === state.item.id);
     if (!original) return;
     const baseBox = elementBounds(original);
+    state.node.style.minHeight = `${Math.max(40, state.baseHeight * imageLayout.scale)}px`;
     const measuredHeight = state.node.scrollHeight / Math.max(0.01, imageLayout.scale);
     const height = Math.max(state.baseHeight, measuredHeight);
     const delta = height - state.baseHeight;
