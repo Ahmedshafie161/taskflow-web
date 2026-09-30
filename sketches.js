@@ -1415,8 +1415,8 @@
   }
 
   async function pasteImageAtTextCursor(blob, editor) {
-    const state = pageBodyEditor;
-    if (!state || state.node !== editor || !editor.isConnected) return pasteImage(blob);
+    const state = pageBodyEditor?.node === editor ? pageBodyEditor : (textElementEditor?.node === editor ? textElementEditor : null);
+    if (!state || !editor.isConnected) return pasteImage(blob);
     const selection = window.getSelection();
     if (!selection?.rangeCount || !editor.contains(selection.anchorNode)) return pasteImage(blob);
     const range = selection.getRangeAt(0).cloneRange();
@@ -1428,7 +1428,7 @@
       height = bitmap.height * scale;
       bitmap.close();
     } catch { /* Keep a readable inline-sized placeholder for uncommon image formats. */ }
-    if (!editor.isConnected || pageBodyEditor !== state) return pasteImage(blob);
+    if (!editor.isConnected || (pageBodyEditor !== state && textElementEditor !== state)) return pasteImage(blob);
 
     const worldPoint = rangeWorldPoint(range);
     const lineHeight = Math.max(12, Number(state.item.fontSize) || 20) + 4;
@@ -1439,9 +1439,10 @@
     document.execCommand('insertText', false, '\n'.repeat(reservedLines));
     worldPoint.y += lineHeight;
     const item = await pasteImage(blob, worldPoint, { w: width, h: height });
-    if (item && editor.isConnected && pageBodyEditor === state) {
+    if (item && editor.isConnected && (pageBodyEditor === state || textElementEditor === state)) {
       editor.focus({ preventScroll: true });
-      queuePageBodySave(state, true);
+      if (pageBodyEditor === state) queuePageBodySave(state, true);
+      else void persistTextElement(state);
     }
     return item;
   }
@@ -1467,7 +1468,7 @@
       if (!dimensions) try { const bitmap = await createImageBitmap(blob); w = Math.min(900, bitmap.width); h = w * bitmap.height / bitmap.width; bitmap.close(); } catch { /* Use a page sized fallback. */ }
       const p = placement || lastCanvasPoint || pageCenter();
       const item = { type: 'com.impactyn.taskmanager.data.entities.SketchElement.Image', _kind: 'image', uriString: `firestore-media://${key}`, mediaName, mimeType: blob.type, x: p.x, y: p.y, w, h };
-      await saveElement(item); loadedImages.delete(key); requestImage(item); $('#save-state').textContent = 'Image saved to shared Firebase';
+      await saveElement(item); loadedImages.delete(key); requestImage(item); $('#save-state').textContent = 'Image saved to shared Firebase'; return item;
     } catch (error) { notice(`Could not paste image: ${error.message}`); $('#save-state').textContent = 'Image save failed'; }
   }
 
