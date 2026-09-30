@@ -440,10 +440,12 @@
       } else if (draft.text || draft.id) incoming.push(draft);
     }
     if (textElementEditor?.boardId === selectedBoard?.id && textElementEditor.node.isConnected) {
-      const draft = { ...textElementEditor.item, text: textElementEditor.node.innerText.replace(/\r\n?/g, '\n') };
-      textElementEditor.item = draft;
-      const index = incoming.findIndex((el) => el.id === draft.id);
-      if (index >= 0) incoming[index] = { ...incoming[index], ...draft };
+      for (const draft of textElementEditor.layoutElements) {
+        const index = incoming.findIndex((el) => el.id === draft.id);
+        if (index >= 0) incoming[index] = { ...incoming[index], ...draft };
+      }
+      const draft = textElementEditor.layoutElements.find((el) => el.id === textElementEditor.item.id);
+      if (draft) textElementEditor.item = draft;
     }
     elements = incoming.sort((a, b) => a.id - b.id);
     if (selectedBoard) selectedBoard.elementCount = elements.length;
@@ -624,13 +626,32 @@
 
   function persistTextElement(state) {
     state.savePromise = (state.savePromise || Promise.resolve()).catch(() => {}).then(async () => {
-      const item = { ...state.item, text: state.node.isConnected ? state.node.innerText.replace(/\r\n?/g, '\n') : state.item.text };
-      const record = { ...item }; delete record._kind;
-      await boardsRef.doc(state.boardId).collection('elements').doc(String(item.id)).set({ elementJson: JSON.stringify(record), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
-      state.item = item;
-      state.lastSavedText = item.text;
-      const index = elements.findIndex((el) => el.id === item.id);
-      if (index >= 0) elements[index] = item;
+      const snapshot = state.layoutElements.map(cloneElement);
+      const changed = snapshot.filter((item) => {
+        const previous = state.savedElements.find((el) => el.id === item.id);
+        if (!previous) return false;
+        const currentRecord = { ...item }; delete currentRecord._kind;
+        const previousRecord = { ...previous }; delete previousRecord._kind;
+        return JSON.stringify(currentRecord) !== JSON.stringify(previousRecord);
+      });
+      if (!changed.length) return;
+      const batch = db.batch();
+      const collection = boardsRef.doc(state.boardId).collection('elements');
+      changed.forEach((item) => {
+        const record = { ...item }; delete record._kind;
+        batch.set(collection.doc(String(item.id)), { elementJson: JSON.stringify(record), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+      });
+      await batch.commit();
+      changed.forEach((item) => {
+        const savedIndex = state.savedElements.findIndex((el) => el.id === item.id);
+        if (savedIndex >= 0) state.savedElements[savedIndex] = cloneElement(item);
+      });
+      const latest = state.layoutElements.find((el) => el.id === state.item.id);
+      if (latest) {
+        state.item = latest;
+        const index = elements.findIndex((el) => el.id === latest.id);
+        if (index >= 0) elements[index] = latest;
+      }
       $('#save-state').textContent = 'Saved to shared Firebase';
     }).catch((error) => {
       lastSaveError = error.message;
@@ -644,6 +665,7 @@
     if (!state) return;
     clearTimeout(textElementSaveTimer);
     state.item = { ...state.item, text: state.node.innerText.replace(/\r\n?/g, '\n') };
+    updateTextElementFlow(state);
     if (textElementEditor === state) textElementEditor = null;
     state.node.remove();
     const index = elements.findIndex((el) => el.id === state.item.id);
@@ -665,14 +687,13 @@
     editor.setAttribute('aria-multiline', 'true');
     editor.spellcheck = true;
     editor.textContent = String(item.text || '');
-    const state = { boardId: selectedBoard.id, item: { ...item }, node: editor, lastSavedText: String(item.text || ''), savePromise: Promise.resolve() };
+    const initialElements = elements.map(cloneElement);
+    const state = { boardId: selectedBoard.id, item: { ...item }, node: editor, baseHeight: Math.max(1, Number(item.h) || 1), baseElements: initialElements, savedElements: initialElements.map(cloneElement), layoutElements: initialElements.map(cloneElement), savePromise: Promise.resolve() };
     textElementEditor = state;
     $('.sketch-drawing-area').append(editor);
     positionTextElementEditor();
     editor.addEventListener('input', () => {
-      state.item = { ...state.item, text: editor.innerText.replace(/\r\n?/g, '\n') };
-      const index = elements.findIndex((el) => el.id === item.id);
-      if (index >= 0) elements[index] = state.item;
+      updateTextElementFlow(state);
       $('#save-state').textContent = 'Saving…';
       queueTextElementSave(state);
     });
@@ -692,6 +713,31 @@
     editor.focus({ preventScroll: true });
     caretAtEnd(editor);
     renderCanvas();
+  }
+
+  function updateTextElementFlow(state) {
+    const text = state.node.innerText.replace(/\r\n?/g, '\n');
+    const original = state.baseElements.find((el) => el.id === state.item.id);
+    if (!original) return;
+    const baseBox = elementBounds(original);
+    const measuredHeight = state.node.scrollHeight / Math.max(0.01, imageLayout.scale);
+    const height = Math.max(state.baseHeight, measuredHeight);
+    const delta = height - state.baseHeight;
+    const layout = state.baseElements.map((element) => {
+      if (element.id === original.id) return { ...element, text, h: height };
+      if (!delta || element.isPageBody) return element;
+      const box = elementBounds(element);
+      const followsVertically = box.y >= baseBox.y + baseBox.h - 2;
+      const sharesTextColumn = box.x < baseBox.x + baseBox.w - 12 && box.x + box.w > baseBox.x + 12;
+      return followsVertically && sharesTextColumn ? moveElement(element, 0, delta) : element;
+    });
+    state.layoutElements = layout;
+    state.item = layout.find((element) => element.id === original.id) || state.item;
+    elements = elements.map((element) => layout.find((updated) => updated.id === element.id) || element);
+    state.node.style.minHeight = `${Math.max(40, height * imageLayout.scale)}px`;
+    if (selectedBoard?.id === state.boardId) {
+      renderCanvas();
+    }
   }
 
   function caretAtEnd(node) {
