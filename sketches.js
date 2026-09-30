@@ -610,8 +610,10 @@
     const state = pageBodyEditor;
     if (!state?.node.isConnected || state.boardId !== selectedBoard?.id) return;
     const box = state.item;
-    state.node.style.left = `${canvas.offsetLeft + imageLayout.x + (box.x - imageLayout.bounds.minX) * imageLayout.scale}px`;
-    state.node.style.top = `${canvas.offsetTop + imageLayout.y + (box.y - imageLayout.bounds.minY) * imageLayout.scale}px`;
+    const areaRect = $('.sketch-drawing-area').getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+    state.node.style.left = `${canvasRect.left - areaRect.left + imageLayout.x + (box.x - imageLayout.bounds.minX) * imageLayout.scale}px`;
+    state.node.style.top = `${canvasRect.top - areaRect.top + imageLayout.y + (box.y - imageLayout.bounds.minY) * imageLayout.scale}px`;
     state.node.style.width = `${Math.max(1, box.w * imageLayout.scale)}px`;
     state.node.style.minHeight = `${Math.max(40, box.h * imageLayout.scale)}px`;
     state.node.style.fontFamily = box.fontFamily || 'Arial';
@@ -624,8 +626,10 @@
     const state = textElementEditor;
     if (!state?.node.isConnected || state.boardId !== selectedBoard?.id) return;
     const box = state.item;
-    state.node.style.left = `${canvas.offsetLeft + imageLayout.x + (box.x - imageLayout.bounds.minX) * imageLayout.scale}px`;
-    state.node.style.top = `${canvas.offsetTop + imageLayout.y + (box.y - imageLayout.bounds.minY) * imageLayout.scale}px`;
+    const areaRect = $('.sketch-drawing-area').getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+    state.node.style.left = `${canvasRect.left - areaRect.left + imageLayout.x + (box.x - imageLayout.bounds.minX) * imageLayout.scale}px`;
+    state.node.style.top = `${canvasRect.top - areaRect.top + imageLayout.y + (box.y - imageLayout.bounds.minY) * imageLayout.scale}px`;
     state.node.style.width = `${Math.max(100, box.w * imageLayout.scale)}px`;
     state.node.style.minHeight = `${Math.max(40, box.h * imageLayout.scale)}px`;
     state.node.style.fontFamily = box.fontFamily || 'Arial';
