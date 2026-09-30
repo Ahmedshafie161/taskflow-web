@@ -812,6 +812,17 @@
     catch(error){notice(`Could not save moved elements: ${error.message}`);}
   }
   document.querySelectorAll('[data-tool]').forEach(button=>button.addEventListener('click',()=>{activeTool=button.dataset.tool;erase=activeTool==='ERASER';document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('active',b===button));canvas.style.cursor=activeTool==='SELECT'?'move':activeTool==='LASSO'?'crosshair':'crosshair';}));
+  const ribbonGroups = { draw: ['draw', 'shapes'], insert: ['insert'], format: ['format'], page: ['page'], edit: ['edit'], view: ['view'] };
+  document.querySelectorAll('[data-ribbon-tab]').forEach((button) => button.addEventListener('click', () => {
+    const tab = button.dataset.ribbonTab;
+    $('.sketch-ribbon').dataset.ribbon = tab;
+    document.querySelectorAll('[data-ribbon-tab]').forEach((item) => {
+      const active = item === button;
+      item.classList.toggle('active', active);
+      item.setAttribute('aria-selected', String(active));
+    });
+    document.querySelectorAll('[data-ribbon-group]').forEach((group) => { group.hidden = !ribbonGroups[tab].includes(group.dataset.ribbonGroup); });
+  }));
   $('#board-filter').addEventListener('input', buildTree);
   $('#toggle-board-panel').addEventListener('click', () => $('.sketch-layout').classList.toggle('boards-hidden'));
   $('#board-copy').addEventListener('click', copySelection);
