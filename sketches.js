@@ -718,6 +718,7 @@
         selectedBoard.elementCount = elements.length;
         $('#selected-board-meta').textContent = `${elements.length} elements · ${selectedBoard.sourceSection || selectedBoard.sourceNotebook || 'Firebase'}`;
       }
+      $('#save-state').textContent = 'Edit canceled';
       renderCanvas();
       return;
     }
