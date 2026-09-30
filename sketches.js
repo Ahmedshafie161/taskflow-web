@@ -435,9 +435,20 @@
       const index = incoming.findIndex(isPageBody);
       if (index >= 0) {
         draft.id = incoming[index].id;
-        pageBodyEditor.item = { ...incoming[index], ...draft };
-        incoming[index] = pageBodyEditor.item;
-      } else if (draft.text || draft.id) incoming.push(draft);
+      }
+      for (const layoutElement of pageBodyEditor.layoutElements || []) {
+        if (isPageBody(layoutElement)) {
+          const bodyDraft = { ...layoutElement, ...draft, id: layoutElement.id || draft.id };
+          const bodyIndex = incoming.findIndex(isPageBody);
+          if (bodyIndex >= 0) incoming[bodyIndex] = bodyDraft;
+          else if (bodyDraft.text || bodyDraft.id) incoming.push(bodyDraft);
+          pageBodyEditor.item = bodyDraft;
+          continue;
+        }
+        const layoutIndex = incoming.findIndex((element) => element.id === layoutElement.id);
+        if (layoutIndex >= 0) incoming[layoutIndex] = layoutElement;
+      }
+      if (!(pageBodyEditor.layoutElements || []).some(isPageBody) && (draft.text || draft.id)) incoming.push(draft);
     }
     if (textElementEditor?.boardId === selectedBoard?.id && textElementEditor.node.isConnected) {
       for (const draft of textElementEditor.layoutElements) {
@@ -674,11 +685,11 @@
     renderCanvas();
   }
 
-  function startTextElementEditor(item) {
+  function startTextElementEditor(item, options = {}) {
     if (!selectedBoard || !item || item._kind !== 'textbox' || item.isPageBody) return;
     closePageBodyEditor();
     closeTextElementEditor();
-    selection = new Set([item.id]);
+    selection = new Set();
     const editor = document.createElement('div');
     editor.className = 'page-body-editor text-element-editor';
     editor.contentEditable = 'plaintext-only';
@@ -711,7 +722,8 @@
       event.preventDefault(); document.execCommand('insertText', false, plain);
     });
     editor.focus({ preventScroll: true });
-    caretAtEnd(editor);
+    if (Number.isFinite(options.clientX) && Number.isFinite(options.clientY)) caretAtPoint(editor, options.clientX, options.clientY);
+    else caretAtEnd(editor);
     renderCanvas();
   }
 
@@ -768,9 +780,23 @@
 
   function updateLocalPageBody(state, render = true) {
     const item = pageBodyDraft(state);
-    const index = elements.findIndex(isPageBody);
-    if (index >= 0) elements.splice(index, 1);
-    if (item.text || item.id) elements.push(item);
+    const baseElements = state.baseElements || elements.map(cloneElement);
+    const original = baseElements.find(isPageBody);
+    const baseItem = original || state.item;
+    const baseBox = elementBounds(baseItem);
+    const delta = item.h - (Number(state.baseHeight) || 40);
+    const layout = baseElements.map((element) => {
+      if (isPageBody(element)) return { ...item, id: element.id };
+      if (!delta) return element;
+      const box = elementBounds(element);
+      const followsVertically = box.y >= baseBox.y + baseBox.h - 2;
+      const sharesTextColumn = box.x < baseBox.x + baseBox.w - 12 && box.x + box.w > baseBox.x + 12;
+      return followsVertically && sharesTextColumn ? moveElement(element, 0, delta) : element;
+    });
+    if (!original && (item.text || item.id)) layout.push(item);
+    state.layoutElements = layout;
+    state.item = item;
+    elements = layout;
     elements.sort((a, b) => a.id - b.id);
     if (selectedBoard?.id === state.boardId) {
       selectedBoard.elementCount = elements.length;
@@ -790,11 +816,25 @@
     state.savePromise = (state.savePromise || Promise.resolve()).catch(() => {}).then(async () => {
       const draft = pageBodyDraft(state);
       if (!draft.text.trim() && !draft.id) return;
-      if (draft.id && draft.text === state.lastSavedText) return;
+      const changedElements = (state.layoutElements || []).filter((element) => {
+        if (isPageBody(element)) return false;
+        const previous = (state.savedElements || []).find((saved) => saved.id === element.id);
+        if (!previous) return false;
+        const currentRecord = { ...element }; delete currentRecord._kind;
+        const previousRecord = { ...previous }; delete previousRecord._kind;
+        return JSON.stringify(currentRecord) !== JSON.stringify(previousRecord);
+      });
+      if (draft.id && draft.text === state.lastSavedText && !changedElements.length) return;
       const item = { ...draft }; delete item._kind;
       const collection = boardsRef.doc(state.boardId).collection('elements');
       if (Number(item.id) > 0) {
-        await collection.doc(String(item.id)).set({ elementJson: JSON.stringify(item), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+        const batch = db.batch();
+        batch.set(collection.doc(String(item.id)), { elementJson: JSON.stringify(item), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+        changedElements.forEach((element) => {
+          const record = { ...element }; delete record._kind;
+          batch.set(collection.doc(String(element.id)), { elementJson: JSON.stringify(record), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+        });
+        await batch.commit();
       } else {
         const contentRef = boardsRef.doc(state.boardId).collection('content').doc('elements');
         await db.runTransaction(async (transaction) => {
@@ -805,12 +845,22 @@
           );
           item.id = nextId;
           transaction.set(collection.doc(String(nextId)), { elementJson: JSON.stringify(item), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+          changedElements.forEach((element) => {
+            const record = { ...element }; delete record._kind;
+            transaction.set(collection.doc(String(element.id)), { elementJson: JSON.stringify(record), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+          });
           transaction.set(contentRef, { nextElementId: nextId + 1, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
         });
         state.item.id = item.id;
+        const bodyDraft = state.layoutElements?.find(isPageBody);
+        if (bodyDraft) bodyDraft.id = item.id;
       }
       state.item = { ...item, _kind: 'textbox' };
       state.lastSavedText = item.text;
+      changedElements.forEach((element) => {
+        const savedIndex = state.savedElements.findIndex((saved) => saved.id === element.id);
+        if (savedIndex >= 0) state.savedElements[savedIndex] = cloneElement(element);
+      });
       if (selectedBoard?.id === state.boardId) updateLocalPageBody(state);
       $('#save-state').textContent = 'Saved to shared Firebase';
     }).catch((error) => {
@@ -846,7 +896,8 @@
         fontSize: Number($('#board-font-size').value) || 20,
         fontFamily: $('#board-font-family').value || 'Arial', colorArgb: activeColor, borderWidth: 0
       };
-      state = { boardId: selectedBoard.id, item, text, lastSavedText: existing?.text || '', savePromise: Promise.resolve() };
+      const initialElements = elements.map(cloneElement);
+      state = { boardId: selectedBoard.id, item, text, lastSavedText: existing?.text || '', baseHeight: Math.max(40, Number(item.h) || 40), baseElements: initialElements, savedElements: initialElements.map(cloneElement), layoutElements: initialElements.map(cloneElement), savePromise: Promise.resolve() };
       const editor = document.createElement('div');
       editor.className = 'page-body-editor';
       editor.contentEditable = 'plaintext-only';
@@ -864,7 +915,7 @@
         state.text = editor.innerText.replace(/\r\n?/g, '\n');
         const oldHeight = Number(state.item.h) || 40;
         const item = updateLocalPageBody(state, false);
-        if (item.h > oldHeight + 1) renderCanvas();
+        if (Math.abs(item.h - oldHeight) > 1) renderCanvas();
         $('#save-state').textContent = 'Saving…';
         queuePageBodySave(state);
       });
@@ -908,6 +959,11 @@
     const p = point(event);
     if (activeTool === 'TEXT') {
       event.preventDefault();
+      const textHit = [...elements].reverse().find((el) => el._kind === 'textbox' && (() => { const b = elementBounds(el); return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h; })());
+      if (textHit && !textHit.isPageBody) {
+        startTextElementEditor(textHit, { clientX: event.clientX, clientY: event.clientY });
+        return;
+      }
       startPageBodyEditor(p, '', { clientX: event.clientX, clientY: event.clientY });
       return;
     }
@@ -918,6 +974,12 @@
     if (activeTool === 'SELECT') {
       let hit = [...elements].reverse().find((el) => { const b=elementBounds(el); return p.x>=b.x-6&&p.x<=b.x+b.w+6&&p.y>=b.y-6&&p.y<=b.y+b.h+6; });
       if (hit?.isPageBody && event.pointerType === 'pen' && !event.shiftKey) hit = null;
+      if (hit?._kind === 'textbox' && event.pointerType !== 'pen' && !event.shiftKey) {
+        event.preventDefault();
+        if (hit.isPageBody) startPageBodyEditor(p, '', { clientX: event.clientX, clientY: event.clientY });
+        else startTextElementEditor(hit, { clientX: event.clientX, clientY: event.clientY });
+        return;
+      }
       if ((!hit || hit.isPageBody) && event.pointerType !== 'pen' && !event.shiftKey) {
         event.preventDefault();
         if (!hit) selection = new Set();
