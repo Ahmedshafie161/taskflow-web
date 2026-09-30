@@ -1403,7 +1403,50 @@
     } catch { return null; }
   }
 
-  async function pasteImage(blob) {
+  function rangeWorldPoint(range) {
+    const canvasRect = canvas.getBoundingClientRect();
+    const rect = range?.getBoundingClientRect?.();
+    const x = rect?.left ?? canvasRect.left;
+    const y = rect?.top ?? canvasRect.top;
+    return {
+      x: (x - canvasRect.left - imageLayout.x) / imageLayout.scale + imageLayout.bounds.minX,
+      y: (y - canvasRect.top - imageLayout.y) / imageLayout.scale + imageLayout.bounds.minY
+    };
+  }
+
+  async function pasteImageAtTextCursor(blob, editor) {
+    const state = pageBodyEditor;
+    if (!state || state.node !== editor || !editor.isConnected) return pasteImage(blob);
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || !editor.contains(selection.anchorNode)) return pasteImage(blob);
+    const range = selection.getRangeAt(0).cloneRange();
+    let width = 320, height = 220;
+    try {
+      const bitmap = await createImageBitmap(blob);
+      const scale = Math.min(1, 640 / bitmap.width, 720 / bitmap.height);
+      width = bitmap.width * scale;
+      height = bitmap.height * scale;
+      bitmap.close();
+    } catch { /* Keep a readable inline-sized placeholder for uncommon image formats. */ }
+    if (!editor.isConnected || pageBodyEditor !== state) return pasteImage(blob);
+
+    const worldPoint = rangeWorldPoint(range);
+    const lineHeight = Math.max(12, Number(state.item.fontSize) || 20) + 4;
+    const reservedLines = Math.max(1, Math.ceil(height / lineHeight));
+    editor.focus({ preventScroll: true });
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.execCommand('insertText', false, '\n'.repeat(reservedLines));
+    worldPoint.y += lineHeight;
+    const item = await pasteImage(blob, worldPoint, { w: width, h: height });
+    if (item && editor.isConnected && pageBodyEditor === state) {
+      editor.focus({ preventScroll: true });
+      queuePageBodySave(state, true);
+    }
+    return item;
+  }
+
+  async function pasteImage(blob, placement = null, dimensions = null) {
     if (!selectedBoard) return showToast('Choose a page before pasting an image');
     if (!(blob instanceof Blob) || !blob.type.startsWith('image/')) return showToast('Copy an image, then paste it onto the page');
     if (blob.size < 1 || blob.size > 32 * 1024 * 1024) return notice('This image is too large to save. Images must be 32 MB or smaller.');
@@ -1420,9 +1463,9 @@
       const mimeExtension = blob.type.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
       const mediaName = blob.name || `pasted-image.${mimeExtension}`;
       await mediaRef.set({ byteLength: bytes.length, mimeType: blob.type, mediaName, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
-      let w = 420, h = 300;
-      try { const bitmap = await createImageBitmap(blob); w = Math.min(900, bitmap.width); h = w * bitmap.height / bitmap.width; bitmap.close(); } catch { /* Use a page sized fallback. */ }
-      const p = lastCanvasPoint || pageCenter();
+      let w = dimensions?.w || 420, h = dimensions?.h || 300;
+      if (!dimensions) try { const bitmap = await createImageBitmap(blob); w = Math.min(900, bitmap.width); h = w * bitmap.height / bitmap.width; bitmap.close(); } catch { /* Use a page sized fallback. */ }
+      const p = placement || lastCanvasPoint || pageCenter();
       const item = { type: 'com.impactyn.taskmanager.data.entities.SketchElement.Image', _kind: 'image', uriString: `firestore-media://${key}`, mediaName, mimeType: blob.type, x: p.x, y: p.y, w, h };
       await saveElement(item); loadedImages.delete(key); requestImage(item); $('#save-state').textContent = 'Image saved to shared Firebase';
     } catch (error) { notice(`Could not paste image: ${error.message}`); $('#save-state').textContent = 'Image save failed'; }
@@ -1561,10 +1604,11 @@
     const clipboardItems = [...(event.clipboardData?.items || [])];
     const imageItem = clipboardItems.find((item) => item.type.toLowerCase().startsWith('image/'));
     const imageFile = imageItem?.getAsFile() || event.clipboardData?.files?.[0];
-    if (imageFile?.type?.startsWith('image/')) { event.preventDefault(); void pasteImage(imageFile); return; }
+    const targetEditor = event.target.closest?.('.page-body-editor');
+    if (imageFile?.type?.startsWith('image/')) { event.preventDefault(); void (targetEditor ? pasteImageAtTextCursor(imageFile, targetEditor) : pasteImage(imageFile, lastCanvasPoint || pageCenter())); return; }
     const html = event.clipboardData?.getData('text/html') || '';
     const htmlImage = imageBlobFromHtml(html);
-    if (htmlImage) { event.preventDefault(); void pasteImage(htmlImage); return; }
+    if (htmlImage) { event.preventDefault(); void (targetEditor ? pasteImageAtTextCursor(htmlImage, targetEditor) : pasteImage(htmlImage, lastCanvasPoint || pageCenter())); return; }
     if (event.target.matches?.('input,textarea,select,[contenteditable]')) return;
     const text = event.clipboardData?.getData('text/plain') || '';
     if (text && clipboardElements.length && text === clipboardPlain) { event.preventDefault(); pasteElements(); }
