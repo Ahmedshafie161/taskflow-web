@@ -10,9 +10,22 @@ A responsive browser companion for Task Manager. The Sketches page reads and wri
 - Images stored by the Android importer in `sketchMedia/{key}/chunks` are reassembled and displayed. External image and linked media URLs are shown in the page.
 - The global theme preference and the dashboard demo data are local to this browser; only sketches use Firebase at this stage.
 
-`firebase-config.js` contains client-side Firebase settings from the Android project's `google-services.json`. These settings identify the project; they are not credentials. Firestore security rules control all reads and writes. This page does not add authentication, so it can access only what the existing rules allow for an unauthenticated client. Do not make sketch data public to make this page work. If rules require a signed-in user, add an approved sign-in flow and use the registered Web app configuration from Firebase Console.
+`firebase-config.js` uses the registered Firebase web-app settings. These identify the project; they are not credentials. Firestore security rules control all reads and writes. Private media requires a verified Google sign-in for `ahmed.elmenshawie@gmail.com`; anonymous sign-in is intentionally not used.
 
-The Firebase compat SDK is loaded from Google's CDN, so the page needs an internet connection. Open it through GitHub Pages or another HTTPS web server. Opening the HTML directly as `file://` can block remote scripts and Firebase requests.
+In Firebase Console, enable **Google** under **Authentication → Sign-in method**. Add the deployed website domain to **Authentication → Settings → Authorized domains**.
+
+The Firebase compat SDK is loaded from Google's CDN, so the page needs an internet connection. Open it through GitHub Pages or another HTTPS web server. Opening the HTML directly as `file://` prevents the Google sign-in flow and private media requests. Add the deployed site's host (and `localhost` for local development) to Firebase Authentication's authorized domains.
+
+## Private OneNote media
+
+The OneNote archive importer stores private Supabase object locators (`supabase-media://...`) in image elements. The web page requests a short-lived URL from `supabase/functions/sign-sketch-media`; the function verifies a Firebase ID token, requires a verified email in `SKETCH_MEDIA_ALLOWED_EMAILS`, then signs the object URL. The bucket stays private. Configure and deploy the function with:
+
+```sh
+supabase secrets set SKETCH_MEDIA_ALLOWED_EMAILS=ahmed.elmenshawie@gmail.com
+supabase functions deploy sign-sketch-media
+```
+
+Keep **Verify JWT with legacy secret** OFF for this function: it validates Firebase tokens itself, then applies the owner email allowlist.
 
 ## Publish
 
