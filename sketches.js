@@ -59,8 +59,15 @@
   let textElementEditor = null;
   let textElementSaveTimer = null;
   let nextProvisionalTextId = -1;
+  let tableEditor = null;
+  let tableSaveTimer = null;
+  let lastCanvasPoint = null;
+  let draggedBoardId = null;
+  let collapsedBoardIds = new Set();
   let imageLayout = { scale: 1, x: 0, y: 0, bounds: { minX: 0, minY: 0 } };
   let lastSaveError = '';
+
+  try { collapsedBoardIds = new Set(JSON.parse(localStorage.getItem('taskflow-sketch-collapsed-pages') || '[]')); } catch { collapsedBoardIds = new Set(); }
 
   function labelForType(el) {
     const raw = String(el.type || el.kind || '').split('.').pop().toLowerCase();
@@ -343,6 +350,7 @@
     const zoomLabel = $('#zoom-label'); if (zoomLabel) zoomLabel.textContent = `${Math.round(zoomFactor * 100)}%`;
     positionPageBodyEditor();
     positionTextElementEditor();
+    positionTableEditor();
     if (!elements.length && !drawing) return;
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (x - b.minX * scale), dpr * (y - b.minY * scale));
     const treeNodes = new Map(elements.filter((element) => element._kind === 'treenode').map((element) => [element.id, element]));
@@ -361,7 +369,8 @@
       }
       ctx.stroke();
     }
-    for (const element of elements) if (element._kind === 'image') drawElement(element);
+    const referenceImages = new Set(elements.filter((element) => element._kind === 'table' && element.referenceImageId != null).map((element) => Number(element.referenceImageId)));
+    for (const element of elements) if (element._kind === 'image') { ctx.save(); if (referenceImages.has(element.id)) ctx.globalAlpha = 0.42; drawElement(element); ctx.restore(); }
     for (const element of elements) if (element._kind !== 'image' && element._kind !== 'connector') drawElement(element);
     for (const element of elements) if (element._kind === 'connector') drawElement(element);
     if (currentStroke?.points.length) drawElement(currentStroke);
@@ -402,14 +411,16 @@
     }
     const visited = new Set();
     const rows = [];
-    function append(parentId, depth) {
+    function append(parentId, depth, ancestorsExpanded = true) {
       for (const board of children.get(parentId) || []) {
         if (visited.has(board.id)) continue;
         visited.add(board.id);
         const count = Number(board.elementCount || 0);
         const section = Boolean(board.isSection);
-        if (!query || matches.has(board.id)) rows.push(`<div class="board-entry ${section ? 'section-entry' : ''} ${selectedBoard?.id === board.id ? 'active' : ''}" style="padding-left:${8 + Math.min(depth, 7) * 17}px" ${section ? '' : `data-board-id="${escapeHtml(board.id)}"`} title="${escapeHtml(board.name)}"><span aria-hidden="true">${section ? '▸' : (depth ? '↳' : '▱')}</span><span class="board-name">${escapeHtml(board.name || 'Untitled board')}</span><span class="board-count">${count || ''}</span></div>`);
-        append(board.id, depth + 1);
+        const hasChildren = Boolean(children.get(board.id)?.length);
+        const collapsed = !query && collapsedBoardIds.has(board.id);
+        if ((!query || matches.has(board.id)) && ancestorsExpanded) rows.push(`<div class="board-entry ${section ? 'section-entry' : ''} ${selectedBoard?.id === board.id ? 'active' : ''}" style="padding-left:${8 + Math.min(depth, 7) * 17}px" ${section ? `data-section-id="${escapeHtml(board.id)}"` : `data-board-id="${escapeHtml(board.id)}" draggable="true"`} title="${escapeHtml(board.name)}">${hasChildren ? `<button class="tree-toggle" type="button" data-toggle-id="${escapeHtml(board.id)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(board.name)}" aria-expanded="${!collapsed}">${collapsed ? '▸' : '▾'}</button>` : `<span class="tree-toggle" aria-hidden="true">${section ? '▸' : (depth ? '↳' : '▱')}</span>`}<span class="board-name">${escapeHtml(board.name || 'Untitled board')}</span><span class="board-count">${count || ''}</span></div>`);
+        append(board.id, depth + 1, ancestorsExpanded && (!collapsed || Boolean(query)));
       }
     }
     append('', 0);
@@ -462,6 +473,7 @@
       const draft = textElementEditor.layoutElements.find((el) => el.id === textElementEditor.item.id);
       if (draft) textElementEditor.item = draft;
     }
+    if (tableEditor?.boardId === selectedBoard?.id && !tableEditor.dirty) { const current = incoming.find((element) => element.id === tableEditor.item.id); if (current) tableEditor.item = current; }
     elements = incoming.sort((a, b) => a.id - b.id);
     if (selectedBoard) selectedBoard.elementCount = elements.length;
     $('#selected-board-meta').textContent = `${elements.length} elements · ${selectedBoard?.sourceSection || selectedBoard?.sourceNotebook || 'Firebase'}`;
@@ -544,8 +556,50 @@
   });
 
   boardTree.addEventListener('click', (event) => {
+    const toggle = event.target.closest('[data-toggle-id]');
+    if (toggle) {
+      event.stopPropagation();
+      const id = toggle.dataset.toggleId;
+      collapsedBoardIds.has(id) ? collapsedBoardIds.delete(id) : collapsedBoardIds.add(id);
+      localStorage.setItem('taskflow-sketch-collapsed-pages', JSON.stringify([...collapsedBoardIds]));
+      buildTree(); return;
+    }
     const entry = event.target.closest('[data-board-id]');
     if (entry) { const board = boards.find((item) => item.id === entry.dataset.boardId); if (board) selectBoard(board); }
+  });
+
+  function descendantIds(rootId) {
+    const found = new Set([rootId]);
+    let changed = true;
+    while (changed) { changed = false; for (const board of boards) if (board.parentBoardId && found.has(board.parentBoardId) && !found.has(board.id)) { found.add(board.id); changed = true; } }
+    return found;
+  }
+  boardTree.addEventListener('dragstart', (event) => {
+    const entry = event.target.closest('[data-board-id]'); if (!entry) return;
+    draggedBoardId = entry.dataset.boardId; entry.classList.add('dragging');
+    event.dataTransfer?.setData('text/plain', draggedBoardId); if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+  });
+  boardTree.addEventListener('dragend', (event) => { event.target.closest('.board-entry')?.classList.remove('dragging'); boardTree.querySelectorAll('.drop-target').forEach((entry) => entry.classList.remove('drop-target')); draggedBoardId = null; });
+  boardTree.addEventListener('dragover', (event) => { const entry = event.target.closest('[data-board-id]'); if (!entry || !draggedBoardId || entry.dataset.boardId === draggedBoardId || descendantIds(draggedBoardId).has(entry.dataset.boardId)) return; event.preventDefault(); boardTree.querySelectorAll('.drop-target').forEach((item) => item.classList.remove('drop-target')); entry.classList.add('drop-target'); if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'; });
+  boardTree.addEventListener('drop', async (event) => {
+    const entry = event.target.closest('[data-board-id]'); if (!entry || !draggedBoardId) return;
+    event.preventDefault(); const moving = boards.find((item) => item.id === draggedBoardId), parent = boards.find((item) => item.id === entry.dataset.boardId);
+    if (!moving || !parent || descendantIds(moving.id).has(parent.id)) return;
+    const subtree = descendantIds(moving.id); const nextLevel = (Number(parent.hierarchyLevel) || 0) + 1; const delta = nextLevel - (Number(moving.hierarchyLevel) || 0);
+    try {
+      const batch = db.batch(); const now = firebase.firestore.FieldValue.serverTimestamp();
+      batch.update(boardsRef.doc(moving.id), { parentBoardId: parent.id, hierarchyLevel: nextLevel, orderIndex: Date.now(), updatedAt: now });
+      for (const board of boards) if (subtree.has(board.id) && board.id !== moving.id) batch.update(boardsRef.doc(board.id), { hierarchyLevel: Math.max(0, (Number(board.hierarchyLevel) || 0) + delta), updatedAt: now });
+      await batch.commit(); collapsedBoardIds.delete(parent.id); buildTree(); showToast(`Moved “${moving.name}” under “${parent.name}”`);
+    } catch (error) { notice(`Could not move page: ${error.message}`); }
+  });
+  boardTree.addEventListener('dragover', (event) => { if (draggedBoardId && event.target === boardTree) event.preventDefault(); });
+  boardTree.addEventListener('drop', async (event) => {
+    if (event.target !== boardTree || !draggedBoardId) return;
+    event.preventDefault(); const moving = boards.find((item) => item.id === draggedBoardId); if (!moving || !moving.parentBoardId) return;
+    const subtree = descendantIds(moving.id), delta = -(Number(moving.hierarchyLevel) || 0);
+    try { const batch = db.batch(), now = firebase.firestore.FieldValue.serverTimestamp(); batch.update(boardsRef.doc(moving.id), { parentBoardId: null, hierarchyLevel: 0, orderIndex: Date.now(), updatedAt: now }); for (const board of boards) if (subtree.has(board.id) && board.id !== moving.id) batch.update(boardsRef.doc(board.id), { hierarchyLevel: Math.max(0, (Number(board.hierarchyLevel) || 0) + delta), updatedAt: now }); await batch.commit(); showToast(`Moved “${moving.name}” to notebook root`); }
+    catch (error) { notice(`Could not move page: ${error.message}`); }
   });
 
   $('#new-board').addEventListener('click', async () => {
@@ -632,6 +686,56 @@
     state.node.style.fontSize = `${Math.max(8, (Number(box.fontSize) || 20) * imageLayout.scale)}px`;
     state.node.style.lineHeight = `${((Number(box.fontSize) || 20) + 4) * imageLayout.scale}px`;
     state.node.style.color = color(box.colorArgb);
+  }
+
+  function positionTableEditor() {
+    const state = tableEditor;
+    if (!state?.node?.isConnected || state.boardId !== selectedBoard?.id) return;
+    const { x, y, w, h } = elementBounds(state.item);
+    const rows = Math.max(1, Number(state.item.rows) || 1), cols = Math.max(1, Number(state.item.cols) || 1);
+    const left = canvas.offsetLeft + imageLayout.x + (x - imageLayout.bounds.minX) * imageLayout.scale;
+    const top = canvas.offsetTop + imageLayout.y + (y - imageLayout.bounds.minY) * imageLayout.scale;
+    state.node.style.left = `${left}px`; state.node.style.top = `${top}px`;
+    state.node.style.width = `${Math.max(30, w * imageLayout.scale)}px`; state.node.style.height = `${Math.max(25, h * imageLayout.scale)}px`;
+    state.node.style.gridTemplateColumns = `repeat(${cols},minmax(0,1fr))`;
+    state.node.style.gridTemplateRows = `repeat(${rows},minmax(0,1fr))`;
+  }
+
+  function startTableEditor(item) {
+    closePageBodyEditor(); closeTextElementEditor(); closeTableEditor();
+    const area = $('.sketch-drawing-area');
+    const rows = Math.max(1, Math.min(30, Number(item.rows) || 1)), cols = Math.max(1, Math.min(20, Number(item.cols) || 1));
+    const node = document.createElement('div'); node.className = 'table-editor'; node.setAttribute('role', 'group'); node.setAttribute('aria-label', `Edit ${rows} by ${cols} table`);
+    const state = { boardId: selectedBoard.id, item, node }; tableEditor = state;
+    for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
+      const cell = document.createElement('textarea'); cell.className = 'table-editor-cell'; cell.dataset.cell = `${row},${col}`; cell.setAttribute('aria-label', `Row ${row + 1}, column ${col + 1}`); cell.value = String(item.cellText?.[`${row},${col}`] ?? item.cellText?.[`${row}-${col}`] ?? ''); cell.spellcheck = false;
+      cell.addEventListener('input', () => {
+        const cellText = { ...(state.item.cellText || {}), [cell.dataset.cell]: cell.value };
+        state.item = { ...state.item, cellText }; state.dirty = true; elements = elements.map((entry) => entry.id === state.item.id ? state.item : entry);
+        clearTimeout(tableSaveTimer); tableSaveTimer = setTimeout(() => saveTableEditor(state), 500); renderCanvas();
+      });
+      cell.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); closeTableEditor(); } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); closeTableEditor(); } });
+      node.append(cell);
+    }
+    node.addEventListener('focusout', (event) => { if (!node.contains(event.relatedTarget)) { clearTimeout(tableSaveTimer); tableSaveTimer = setTimeout(() => closeTableEditor(state), 120); } });
+    area.append(node); area.classList.add('editing-table'); positionTableEditor(); node.querySelector('textarea')?.focus();
+  }
+
+  async function saveTableEditor(state) {
+    if (tableEditor !== state || state.boardId !== selectedBoard?.id) return;
+    try {
+      const record = { ...state.item }; delete record._kind;
+      await boardsRef.doc(state.boardId).collection('elements').doc(String(record.id)).set({ elementJson: JSON.stringify(record), updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      $('#save-state').textContent = 'Saved to shared Firebase';
+    } catch (error) { notice(`Could not save table cell: ${error.message}`); }
+  }
+
+  function closeTableEditor(state = tableEditor) {
+    if (!state) return;
+    clearTimeout(tableSaveTimer); tableSaveTimer = null;
+    if (state.dirty) { state.dirty = false; void saveTableEditor(state); }
+    if (state === tableEditor) tableEditor = null;
+    state.node?.remove(); $('.sketch-drawing-area').classList.remove('editing-table'); renderCanvas();
   }
 
   function queueTextElementSave(state) {
@@ -1024,6 +1128,7 @@
   canvas.addEventListener('pointerdown', (event) => {
     if (!selectedBoard) return;
     const p = point(event);
+    lastCanvasPoint = p;
       if (activeTool === 'TEXT') {
       event.preventDefault();
       const textHit = [...elements].reverse().find((el) => el._kind === 'textbox' && (() => { const b = elementBounds(el); return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h; })());
@@ -1083,11 +1188,13 @@
   canvas.addEventListener('dblclick', (event) => {
     if (!selectedBoard) return;
     const p = point(event);
+    const tableHit = [...elements].reverse().find((el) => el._kind === 'table' && (() => { const b = elementBounds(el); return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h; })());
+    if (tableHit) { event.preventDefault(); startTableEditor(tableHit); return; }
     const hit = [...elements].reverse().find((el) => el._kind === 'textbox' && (() => { const b = elementBounds(el); return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h; })());
     if (hit) { event.preventDefault(); startTextElementEditor(hit); }
   });
   canvas.addEventListener('pointermove', (event) => {
-    if (!drawing) return; const p=point(event);
+    const p=point(event); lastCanvasPoint=p; if (!drawing) return;
     if (currentStroke) currentStroke.points.push(p);
     else if (lassoStart) { lassoRect={x:Math.min(lassoStart.x,p.x),y:Math.min(lassoStart.y,p.y),w:Math.abs(p.x-lassoStart.x),h:Math.abs(p.y-lassoStart.y)}; }
     else if (shapePreview&&shapeStart) { shapePreview.w=p.x-shapeStart.x; shapePreview.h=p.y-shapeStart.y; }
@@ -1207,12 +1314,56 @@
   }
   async function pasteButtonAction() {
     try {
+      if (navigator.clipboard?.read) {
+        const clipboardItems = await navigator.clipboard.read();
+        for (const clipboardItem of clipboardItems) {
+          const mime = clipboardItem.types.find((type) => type.startsWith('image/'));
+          if (mime) return pasteImage(await clipboardItem.getType(mime));
+        }
+      }
       const text = await navigator.clipboard?.readText();
       if (text && clipboardElements.length && text === clipboardPlain) return pasteElements();
       if (text?.trim()) return pasteText(text);
     } catch { /* Clipboard permission may be unavailable; use the local sketch clipboard below. */ }
     if (clipboardElements.length) return pasteElements();
     showToast('Use Ctrl/Cmd+V after copying text or an item');
+  }
+
+  async function pasteImage(blob) {
+    if (!selectedBoard) return showToast('Choose a page before pasting an image');
+    if (!(blob instanceof Blob) || !blob.type.startsWith('image/')) return showToast('Copy an image, then paste it onto the page');
+    if (blob.size < 1 || blob.size > 32 * 1024 * 1024) return notice('This image is too large to save. Images must be 32 MB or smaller.');
+    try {
+      $('#save-state').textContent = 'Saving image…';
+      const key = db.collection('sketchMedia').doc().id;
+      const mediaRef = db.collection('sketchMedia').doc(key);
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const batchSize = 400 * 1024;
+      for (let start = 0, chunkIndex = 0; start < bytes.length; start += batchSize, chunkIndex++) {
+        const chunk = bytes.slice(start, Math.min(bytes.length, start + batchSize));
+        await mediaRef.collection('chunks').doc(String(chunkIndex).padStart(5, '0')).set({ chunkIndex, chunkData: firebase.firestore.Blob.fromUint8Array(chunk) });
+      }
+      const mimeExtension = blob.type.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+      const mediaName = blob.name || `pasted-image.${mimeExtension}`;
+      await mediaRef.set({ byteLength: bytes.length, mimeType: blob.type, mediaName, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+      let w = 420, h = 300;
+      try { const bitmap = await createImageBitmap(blob); w = Math.min(900, bitmap.width); h = w * bitmap.height / bitmap.width; bitmap.close(); } catch { /* Use a page sized fallback. */ }
+      const p = lastCanvasPoint || pageCenter();
+      const item = { type: 'com.impactyn.taskmanager.data.entities.SketchElement.Image', _kind: 'image', uriString: `firestore-media://${key}`, mediaName, mimeType: blob.type, x: p.x, y: p.y, w, h };
+      await saveElement(item); loadedImages.delete(key); requestImage(item); $('#save-state').textContent = 'Image saved to shared Firebase';
+    } catch (error) { notice(`Could not paste image: ${error.message}`); $('#save-state').textContent = 'Image save failed'; }
+  }
+
+  async function imageToEditableTable() {
+    const image = selectedElements().find((item) => item._kind === 'image');
+    if (!image) return showToast('Select a table image first');
+    const rows = Math.min(30, Math.max(1, Number(prompt('How many table rows?', '4')) || 0));
+    if (!rows) return;
+    const cols = Math.min(20, Math.max(1, Number(prompt('How many table columns?', '3')) || 0));
+    if (!cols) return;
+    const table = { type: 'com.impactyn.taskmanager.data.entities.SketchElement.Table', _kind: 'table', x: image.x, y: image.y, w: image.w, h: image.h, rows, cols, cellText: {}, referenceImageId: image.id, colorArgb: activeColor, strokeWidth: 1 };
+    selection = new Set(); await saveElement(table); selection = new Set([table.id]); startTableEditor(table);
+    showToast('Editable grid added. Double-click cells to enter the text from the image.');
   }
   async function deleteSelection() {
     if (!selectedBoard || !selection.size) return;
@@ -1245,10 +1396,25 @@
     document.querySelectorAll('[data-ribbon-group]').forEach((group) => { group.hidden = !ribbonGroups[tab].includes(group.dataset.ribbonGroup); });
   }));
   $('#board-filter').addEventListener('input', buildTree);
-  $('#toggle-board-panel').addEventListener('click', () => $('.sketch-layout').classList.toggle('boards-hidden'));
+  $('#toggle-board-panel').addEventListener('click', () => {
+    const layout = $('.sketch-layout'); layout.classList.toggle('boards-hidden');
+    const open = !layout.classList.contains('boards-hidden');
+    $('#toggle-board-panel').setAttribute('aria-label', open ? 'Hide notebook pages' : 'Show notebook pages');
+    $('#toggle-board-panel').title = open ? 'Hide notebook pages' : 'Show notebook pages'; renderCanvas();
+  });
+  let allPagesCollapsed = false;
+  $('#toggle-board-tree').addEventListener('click', () => {
+    allPagesCollapsed = !allPagesCollapsed;
+    collapsedBoardIds = new Set(allPagesCollapsed ? boards.filter((board) => boards.some((item) => item.parentBoardId === board.id)).map((board) => board.id) : []);
+    localStorage.setItem('taskflow-sketch-collapsed-pages', JSON.stringify([...collapsedBoardIds]));
+    $('#toggle-board-tree').textContent = allPagesCollapsed ? '⊞' : '⊖';
+    $('#toggle-board-tree').title = allPagesCollapsed ? 'Expand all pages' : 'Collapse all pages';
+    $('#toggle-board-tree').setAttribute('aria-label', allPagesCollapsed ? 'Expand all pages' : 'Collapse all pages'); buildTree();
+  });
   $('#board-copy').addEventListener('click', copySelection);
   $('#board-paste').addEventListener('click', pasteButtonAction);
   $('#board-delete-selection').addEventListener('click', deleteSelection);
+  $('#board-image-table').addEventListener('click', imageToEditableTable);
   $('#board-font-size').addEventListener('change', (event) => { event.target.value = String(Math.max(10, Math.min(96, Number(event.target.value) || 20))); formatSelectedText({ fontSize: Number(event.target.value) }); });
   $('#board-font-family').addEventListener('change', (event) => formatSelectedText({ fontFamily: event.target.value }));
   function updateZoom(nextZoom, fit = false) {
@@ -1277,7 +1443,15 @@
       else showToast('Use the browser full-screen control on this device');
     } catch { showToast('Browser full screen is unavailable here'); }
   });
-  document.addEventListener('fullscreenchange', () => { $('#sketch-fullscreen').textContent = document.fullscreenElement ? '⛶ Exit full screen' : '⛶ Full screen'; renderCanvas(); });
+  let panelWasHiddenBeforeFullscreen = false;
+  document.addEventListener('fullscreenchange', () => {
+    const fullscreen = document.fullscreenElement === $('#sketch-view');
+    $('#sketch-fullscreen').textContent = fullscreen ? '⛶ Exit full screen' : '⛶ Full screen';
+    const layout = $('.sketch-layout');
+    if (fullscreen) { panelWasHiddenBeforeFullscreen = layout.classList.contains('boards-hidden'); layout.classList.add('boards-hidden'); }
+    else layout.classList.toggle('boards-hidden', panelWasHiddenBeforeFullscreen);
+    renderCanvas();
+  });
   $('#board-color').addEventListener('input',e=>{const v=e.target.value;activeColor=(0xFF000000|parseInt(v.slice(1),16)>>>0);});
   $('#board-color').addEventListener('change', () => formatSelectedText({ colorArgb: activeColor }));
   $('#board-background').addEventListener('change',async e=>{if(!selectedBoard)return;selectedBoard.backgroundPattern=e.target.value;$('.sketch-drawing-area').dataset.pattern=e.target.value;await boardsRef.doc(selectedBoard.id).update({backgroundPattern:e.target.value,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});});
@@ -1309,7 +1483,11 @@
     }
   });
   window.addEventListener('paste', (event) => {
-    if (!document.body.classList.contains('sketch-active') || !selectedBoard || event.target.matches?.('input,textarea,select,[contenteditable]')) return;
+    if (!document.body.classList.contains('sketch-active') || !selectedBoard) return;
+    const clipboardItems = [...(event.clipboardData?.items || [])];
+    const imageItem = clipboardItems.find((item) => item.type.startsWith('image/'));
+    if (imageItem) { event.preventDefault(); void pasteImage(imageItem.getAsFile()); return; }
+    if (event.target.matches?.('input,textarea,select,[contenteditable]')) return;
     const text = event.clipboardData?.getData('text/plain') || '';
     if (text && clipboardElements.length && text === clipboardPlain) { event.preventDefault(); pasteElements(); }
     else if (text.trim()) { event.preventDefault(); pasteText(text); }
