@@ -30,6 +30,7 @@
   const canvas = $('#board-canvas');
   const ctx = canvas.getContext('2d');
   const loadedImages = new Map();
+  const pendingImagePreviews = new Set();
   let boards = [];
   let selectedBoard = null;
   let elements = [];
@@ -349,6 +350,7 @@
     imageLayout = { scale, x, y, bounds: b };
     const zoomLabel = $('#zoom-label'); if (zoomLabel) zoomLabel.textContent = `${Math.round(zoomFactor * 100)}%`;
     positionPageBodyEditor();
+    positionPendingImagePreviews();
     positionTextElementEditor();
     positionTableEditor();
     if (!elements.length && !drawing) return;
@@ -917,11 +919,7 @@
     editor.addEventListener('blur', () => {
       if (textElementEditor === state) closeTextElementEditor(state);
     }, { once: true });
-    editor.addEventListener('paste', (event) => {
-      const plain = event.clipboardData?.getData('text/plain');
-      if (plain == null) return;
-      event.preventDefault(); document.execCommand('insertText', false, plain);
-    });
+    editor.addEventListener('paste', (event) => handleSketchEditorPaste(event, editor));
     editor.focus({ preventScroll: true });
     if (Number.isFinite(options.clientX) && Number.isFinite(options.clientY)) caretAtPoint(editor, options.clientX, options.clientY);
     else caretAtEnd(editor);
@@ -1006,6 +1004,8 @@
     const baseItem = original || state.item;
     const baseBox = elementBounds(baseItem);
     const delta = item.h - (Number(state.baseHeight) || 40);
+    const knownIds = new Set(baseElements.map((element) => element.id));
+    const addedElements = elements.filter((element) => !knownIds.has(element.id) && !isPageBody(element));
     const layout = baseElements.map((element) => {
       if (isPageBody(element)) return { ...item, id: element.id };
       if (!delta) return element;
@@ -1014,6 +1014,7 @@
       const sharesTextColumn = box.x < baseBox.x + baseBox.w - 12 && box.x + box.w > baseBox.x + 12;
       return followsVertically && sharesTextColumn ? moveElement(element, 0, delta) : element;
     });
+    layout.push(...addedElements);
     if (!original && (item.text || item.id)) layout.push(item);
     state.layoutElements = layout;
     state.item = item;
@@ -1148,12 +1149,7 @@
       editor.addEventListener('blur', () => {
         if (pageBodyEditor === state) closePageBodyEditor(state);
       }, { once: true });
-      editor.addEventListener('paste', (event) => {
-        const plain = event.clipboardData?.getData('text/plain');
-        if (plain == null) return;
-        event.preventDefault();
-        document.execCommand('insertText', false, plain);
-      });
+      editor.addEventListener('paste', (event) => handleSketchEditorPaste(event, editor));
     }
 
     if (initialText) {
@@ -1298,20 +1294,20 @@
   }
   canvas.addEventListener('pointerup', endStroke);
   canvas.addEventListener('pointercancel', endStroke);
-  async function persistElement(item) {
-    const contentRef=boardsRef.doc(selectedBoard.id).collection('content').doc('elements');
+  async function persistElement(item, boardId = selectedBoard.id) {
+    const contentRef=boardsRef.doc(boardId).collection('content').doc('elements');
     await db.runTransaction(async transaction=>{
       const snap=await transaction.get(contentRef);
       const nextId=Math.max(elements.reduce((m,e)=>Math.max(m,e.id+1),1),Number(snap.get('nextElementId'))||1);
       const record={...item,id:nextId};delete record._kind;
-      transaction.set(boardsRef.doc(selectedBoard.id).collection('elements').doc(String(nextId)),{elementJson:JSON.stringify(record),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+      transaction.set(boardsRef.doc(boardId).collection('elements').doc(String(nextId)),{elementJson:JSON.stringify(record),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
       transaction.set(contentRef,{nextElementId:nextId+1,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
       item.id=nextId;
     });
   }
   function cloneElement(el) { return JSON.parse(JSON.stringify(el)); }
   function recordUndo(snapshot=elements) { undoStack.push(snapshot.map(cloneElement)); if(undoStack.length>40)undoStack.shift(); redoStack.length=0; }
-  async function saveElement(item) { try { recordUndo();await persistElement(item);lastSaveError='';$('#save-state').textContent='Saved to shared Firebase';renderCanvas(); } catch(error) { lastSaveError=error.message;notice(`Could not save element: ${error.message}`); } }
+  async function saveElement(item) { try { recordUndo();await persistElement(item);lastSaveError='';$('#save-state').textContent='Saved to shared Firebase';if(!elements.some((element)=>element.id===item.id))elements=[...elements,item].sort((a,b)=>a.id-b.id);renderCanvas();return true; } catch(error) { lastSaveError=error.message;notice(`Could not save element: ${error.message}`);return false; } }
   function selectedElements() { return elements.filter((el) => selection.has(el.id)); }
   async function formatSelectedText(updates) {
     const picked = selectedElements().filter((el) => el._kind === 'textbox' || el._kind === 'treenode');
@@ -1403,6 +1399,30 @@
     } catch { return null; }
   }
 
+  function handleSketchEditorPaste(event, editor) {
+    const clipboard = event.clipboardData;
+    const imageItem = [...(clipboard?.items || [])].find((item) => item.type.toLowerCase().startsWith('image/'));
+    const imageFile = imageItem?.getAsFile() || clipboard?.files?.[0];
+    if (imageFile?.type?.startsWith('image/')) {
+      event.preventDefault();
+      event.stopPropagation();
+      void pasteImageAtTextCursor(imageFile, editor);
+      return;
+    }
+    const htmlImage = imageBlobFromHtml(clipboard?.getData('text/html') || '');
+    if (htmlImage) {
+      event.preventDefault();
+      event.stopPropagation();
+      void pasteImageAtTextCursor(htmlImage, editor);
+      return;
+    }
+    const plain = clipboard?.getData('text/plain');
+    if (plain != null) {
+      event.preventDefault();
+      document.execCommand('insertText', false, plain);
+    }
+  }
+
   function rangeWorldPoint(range) {
     const canvasRect = canvas.getBoundingClientRect();
     const rect = range?.getBoundingClientRect?.();
@@ -1447,29 +1467,83 @@
     return item;
   }
 
+  function positionPendingImagePreviews() {
+    for (const preview of pendingImagePreviews) {
+      const { node, item, boardId } = preview;
+      node.hidden = selectedBoard?.id !== boardId;
+      node.style.left = `${canvas.offsetLeft + imageLayout.x + (item.x - imageLayout.bounds.minX) * imageLayout.scale}px`;
+      node.style.top = `${canvas.offsetTop + imageLayout.y + (item.y - imageLayout.bounds.minY) * imageLayout.scale}px`;
+      node.style.width = `${item.w * imageLayout.scale}px`;
+      node.querySelector('img').style.height = `${item.h * imageLayout.scale}px`;
+    }
+  }
+
   async function pasteImage(blob, placement = null, dimensions = null) {
     if (!selectedBoard) return showToast('Choose a page before pasting an image');
     if (!(blob instanceof Blob) || !blob.type.startsWith('image/')) return showToast('Copy an image, then paste it onto the page');
     if (blob.size < 1 || blob.size > 32 * 1024 * 1024) return notice('This image is too large to save. Images must be 32 MB or smaller.');
-    try {
-      $('#save-state').textContent = 'Saving image…';
-      const key = db.collection('sketchMedia').doc().id;
-      const mediaRef = db.collection('sketchMedia').doc(key);
-      const bytes = new Uint8Array(await blob.arrayBuffer());
-      const batchSize = 400 * 1024;
-      for (let start = 0, chunkIndex = 0; start < bytes.length; start += batchSize, chunkIndex++) {
-        const chunk = bytes.slice(start, Math.min(bytes.length, start + batchSize));
-        await mediaRef.collection('chunks').doc(String(chunkIndex).padStart(5, '0')).set({ chunkIndex, chunkData: firebase.firestore.Blob.fromUint8Array(chunk) });
-      }
-      const mimeExtension = blob.type.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
-      const mediaName = blob.name || `pasted-image.${mimeExtension}`;
-      await mediaRef.set({ byteLength: bytes.length, mimeType: blob.type, mediaName, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
-      let w = dimensions?.w || 420, h = dimensions?.h || 300;
-      if (!dimensions) try { const bitmap = await createImageBitmap(blob); w = Math.min(900, bitmap.width); h = w * bitmap.height / bitmap.width; bitmap.close(); } catch { /* Use a page sized fallback. */ }
-      const p = placement || lastCanvasPoint || pageCenter();
-      const item = { type: 'com.impactyn.taskmanager.data.entities.SketchElement.Image', _kind: 'image', uriString: `firestore-media://${key}`, mediaName, mimeType: blob.type, x: p.x, y: p.y, w, h };
-      await saveElement(item); loadedImages.delete(key); requestImage(item); $('#save-state').textContent = 'Image saved to shared Firebase'; return item;
-    } catch (error) { notice(`Could not paste image: ${error.message}`); $('#save-state').textContent = 'Image save failed'; }
+    const boardId = selectedBoard.id;
+    const mediaRef = db.collection('sketchMedia').doc();
+    const key = mediaRef.id;
+    const mediaName = blob.name || `pasted-image.${blob.type.split('/')[1]?.replace('jpeg', 'jpg') || 'png'}`;
+    const objectUrl = URL.createObjectURL(blob);
+    const image = new Image();
+    image.src = objectUrl;
+    try { await image.decode(); } catch { URL.revokeObjectURL(objectUrl); notice('The clipboard image could not be decoded.'); return; }
+    image.dataset.objectUrl = objectUrl;
+    const w = dimensions?.w || Math.min(900, image.naturalWidth);
+    const h = dimensions?.h || w * image.naturalHeight / image.naturalWidth;
+    const p = placement || lastCanvasPoint || pageCenter();
+    const item = { type: 'com.impactyn.taskmanager.data.entities.SketchElement.Image', _kind: 'image', uriString: `firestore-media://${key}`, mediaName, mimeType: blob.type, x: p.x, y: p.y, w, h };
+    const node = document.createElement('div'); node.className = 'pasted-image-preview';
+    const caption = document.createElement('button'); caption.type = 'button'; caption.textContent = 'Saving image…'; caption.disabled = true;
+    node.append(image, caption); $('.sketch-drawing-area').append(node);
+    const preview = { node, item, boardId }; pendingImagePreviews.add(preview); positionPendingImagePreviews();
+    recordUndo();
+    let mediaSaved = false, saving = false, uploadErrorMessage = '';
+    const upload = async () => {
+      if (saving) return;
+      saving = true; caption.disabled = true; caption.textContent = 'Saving image…';
+      try {
+        if (!mediaSaved) {
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          const chunkSize = 400 * 1024;
+          for (let start = 0, chunkIndex = 0; start < bytes.length; start += chunkSize, chunkIndex++) {
+            const chunk = bytes.slice(start, Math.min(bytes.length, start + chunkSize));
+            await mediaRef.collection('chunks').doc(String(chunkIndex).padStart(5, '0')).set({ chunkIndex, chunkData: firebase.firestore.Blob.fromUint8Array(chunk) });
+          }
+          await mediaRef.set({ byteLength: bytes.length, mimeType: blob.type, mediaName, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+          mediaSaved = true;
+        }
+        await persistElement(item, boardId);
+        if (selectedBoard?.id === boardId) {
+          loadedImages.set(key, image);
+          if (!elements.some((element) => element.id === item.id)) elements.push(item);
+          // Make the image part of the current text layout, so the next keystroke keeps it.
+          for (const state of [pageBodyEditor, textElementEditor]) {
+            if (state?.boardId !== boardId) continue;
+            state.baseElements = elements.map(cloneElement);
+            state.baseHeight = state.item.h;
+            state.layoutElements = elements.map(cloneElement);
+          }
+          $('#save-state').textContent = 'Image saved to shared Firebase';
+          if (uploadErrorMessage && $('#firebase-warning').textContent === uploadErrorMessage) notice('');
+        } else URL.revokeObjectURL(objectUrl);
+        pendingImagePreviews.delete(preview); node.remove(); renderCanvas();
+        return item;
+      } catch (error) {
+        caption.textContent = 'Image not saved · Retry'; caption.disabled = false;
+        if (selectedBoard?.id === boardId) {
+          $('#save-state').textContent = 'Image not saved';
+          uploadErrorMessage = error.code === 'resource-exhausted'
+            ? 'Firebase quota is exhausted. This image is visible here but is not saved. Keep this tab open and retry when the quota is available.'
+            : `Image is visible but could not save: ${error.message}. Keep this tab open and retry.`;
+          notice(uploadErrorMessage);
+        }
+      } finally { saving = false; }
+    };
+    caption.addEventListener('click', () => { void upload(); });
+    return upload();
   }
 
   async function imageToEditableTable() {
