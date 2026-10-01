@@ -344,6 +344,8 @@
     if (canvas.width !== Math.round(rect.width * dpr) || canvas.height !== Math.round(rect.height * dpr)) {
       canvas.width = Math.round(rect.width * dpr); canvas.height = Math.round(rect.height * dpr);
     }
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
     const x = Math.max(30, (rect.width - worldW * scale) / 2), y = Math.max(30, (rect.height - worldH * scale) / 2);
@@ -1443,9 +1445,8 @@
     let width = 320, height = 220;
     try {
       const bitmap = await createImageBitmap(blob);
-      const scale = Math.min(1, 640 / bitmap.width, 720 / bitmap.height);
-      width = bitmap.width * scale;
-      height = bitmap.height * scale;
+      width = bitmap.width;
+      height = bitmap.height;
       bitmap.close();
     } catch { /* Keep a readable inline-sized placeholder for uncommon image formats. */ }
     if (!editor.isConnected || (pageBodyEditor !== state && textElementEditor !== state)) return pasteImage(blob);
@@ -1491,7 +1492,7 @@
     image.src = objectUrl;
     try { await image.decode(); } catch { URL.revokeObjectURL(objectUrl); notice('The clipboard image could not be decoded.'); return; }
     image.dataset.objectUrl = objectUrl;
-    const w = dimensions?.w || Math.min(900, image.naturalWidth);
+    const w = dimensions?.w || image.naturalWidth;
     const h = dimensions?.h || w * image.naturalHeight / image.naturalWidth;
     const p = placement || lastCanvasPoint || pageCenter();
     const item = { type: 'com.impactyn.taskmanager.data.entities.SketchElement.Image', _kind: 'image', uriString: `firestore-media://${key}`, mediaName, mimeType: blob.type, x: p.x, y: p.y, w, h };
@@ -1543,7 +1544,9 @@
       } finally { saving = false; }
     };
     caption.addEventListener('click', () => { void upload(); });
-    return upload();
+    // The preview is already visible; saving must not hold the paste interaction open.
+    void upload();
+    return item;
   }
 
   async function imageToEditableTable() {
