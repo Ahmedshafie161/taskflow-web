@@ -286,6 +286,7 @@
       const fontSize = Math.max(10, Number(el.fontSize) || 16);
       const fontFamily = ['Arial', 'Lora', 'Caveat'].includes(el.fontFamily) ? el.fontFamily : 'Arial';
       ctx.fillStyle = ink; ctx.font = `${fontSize}px "${fontFamily}"`;
+      if (el.fontRuns?.length) { drawRichText(el.text || '', el.fontRuns, x + 6, y + 18, Math.max(20, w - 12), fontSize, fontFamily, fontSize + 4); return; }
       const lines = [];
       for (const sourceLine of String(el.text || '').split('\n')) {
         let line = '';
@@ -310,7 +311,7 @@
       for (const [cell, text] of Object.entries(el.cellText || {})) {
         const [row, col] = cell.split(/[,:-]/).map(Number);
         if (!Number.isInteger(row) || !Number.isInteger(col) || row < 0 || row >= rows || col < 0 || col >= cols) continue;
-        tableTextLines(text, w / cols - 10).forEach((line, index) => ctx.fillText(line, x + col * w / cols + 5, y + offsets[row] + 16 + index * 16));
+        drawRichText(text, el.cellFontRuns?.[`${row},${col}`], x + col * w / cols + 5, y + offsets[row] + 16, Math.max(1, w / cols - 10), 12, 'Arial', 16);
       }
       return;
     }
@@ -437,9 +438,10 @@
 
   function pageBodyDraft(state = pageBodyEditor) {
     if (!state) return null;
-    const text = state.node?.isConnected ? state.node.innerText.replace(/\r\n?/g, '\n') : state.text;
+    const rich = state.node?.isConnected ? readRichEditor(state.node) : { text: state.text, fontRuns: state.item.fontRuns || [] };
+    const text = rich.text;
     state.text = text;
-    const item = { ...state.item, _kind: 'textbox', isPageBody: true, text };
+    const item = { ...state.item, _kind: 'textbox', isPageBody: true, text, fontRuns: rich.fontRuns };
     if (state.node?.isConnected) item.h = Math.max(40, state.node.getBoundingClientRect().height / zoomFactor);
     state.item = item;
     return item;
@@ -753,35 +755,97 @@
     return Array.from({ length: rows }, (_, row) => Math.max(20, Number(item.rowHeights?.[row]) || Number(item.h) / rows || 25));
   }
 
-  function tableTextLines(text, width) {
-    ctx.save(); ctx.font = '12px sans-serif';
-    const lines = [];
-    for (const paragraph of String(text).split('\n')) {
-      let line = '';
-      for (const char of paragraph) {
-        if (line && ctx.measureText(line + char).width > Math.max(1, width)) { lines.push(line); line = ''; }
-        line += char;
-      }
-      lines.push(line);
+  const textFonts = new Set(['Arial', 'Lora', 'Caveat']);
+  let savedTextSelection = null;
+
+  function richEditorContent(node, text, runs = []) {
+    node.replaceChildren();
+    let offset = 0;
+    for (const run of [...runs].sort((a, b) => a.start - b.start)) {
+      const start = Math.max(offset, Math.min(text.length, run.start)), end = Math.min(text.length, run.end);
+      if (end <= start || !textFonts.has(run.fontFamily)) continue;
+      node.append(document.createTextNode(text.slice(offset, start)));
+      const span = document.createElement('span'); span.style.fontFamily = run.fontFamily;
+      span.textContent = text.slice(start, end); node.append(span); offset = end;
     }
-    ctx.restore(); return lines;
+    node.append(document.createTextNode(text.slice(offset)));
+  }
+
+  function readRichEditor(node) {
+    let text = ''; const fontRuns = [];
+    function walk(current, font = '') {
+      if (current.nodeType === Node.TEXT_NODE) {
+        const start = text.length; text += current.textContent;
+        if (font && text.length > start) fontRuns.push({ start, end: text.length, fontFamily: font });
+        return;
+      }
+      if (current.nodeType !== Node.ELEMENT_NODE) return;
+      if (current.tagName === 'BR') {
+        const parent = current.parentElement;
+        if (parent.childNodes.length === 1) return;
+        if (!current.nextSibling && current.previousSibling?.nodeName === 'BR') return;
+        text += '\n'; return;
+      }
+      const candidate = (current.style.fontFamily || current.getAttribute('face') || '').replace(/["']/g, '').trim();
+      const family = textFonts.has(candidate) ? candidate : font;
+      const block = current !== node && /^(DIV|P|LI)$/.test(current.tagName);
+      if (block && text && !text.endsWith('\n')) text += '\n';
+      for (const child of current.childNodes) walk(child, family);
+      if (block && current.nextSibling && !text.endsWith('\n')) text += '\n';
+    }
+    walk(node); return { text: text.replace(/\r/g, ''), fontRuns };
+  }
+
+  function rememberTextSelection() {
+    const selected = window.getSelection();
+    if (!selected?.rangeCount) return;
+    const range = selected.getRangeAt(0), element = range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+    const node = element?.closest('.page-body-editor,.table-editor-cell');
+    if (node && node.contains(range.startContainer) && node.contains(range.endContainer)) savedTextSelection = { node, range: range.cloneRange() };
+  }
+  document.addEventListener('selectionchange', rememberTextSelection);
+  $('.sketch-ribbon-shell').addEventListener('pointerdown', rememberTextSelection, true);
+  function usingFormatToolbar(target) { return Boolean(target?.closest?.('.sketch-ribbon-shell')); }
+
+  function drawRichText(text, runs, x, y, width, fontSize, family, lineHeight) {
+    let cursor = 0, line = 0, offset = 0;
+    for (const char of String(text)) {
+      const run = runs?.find(run => offset >= run.start && offset < run.end);
+      ctx.font = `${fontSize}px "${textFonts.has(run?.fontFamily) ? run.fontFamily : family}"`;
+      if (char === '\n') { cursor = 0; line++; offset++; continue; }
+      const size = ctx.measureText(char).width;
+      if (cursor && cursor + size > width) { cursor = 0; line++; }
+      ctx.fillText(char, x + cursor, y + line * lineHeight); cursor += size; offset += char.length;
+    }
+  }
+
+  function applySelectedFont(fontFamily) {
+    const saved = savedTextSelection;
+    if (!saved?.node.isConnected || !textFonts.has(fontFamily)) return false;
+    const node = saved.node;
+    node.focus({ preventScroll: true });
+    const selected = window.getSelection(); selected.removeAllRanges(); selected.addRange(saved.range);
+    document.execCommand('styleWithCSS', false, true);
+    document.execCommand('fontName', false, fontFamily);
+    node.dispatchEvent(new Event('input', { bubbles: true }));
+    rememberTextSelection(); return true;
   }
 
   function resizeTableRows(state) {
-    const before = elementBounds(state.item), heights = tableRowHeights(state.item);
+    const before = elementBounds(state.item), heights = [...state.minRowHeights];
     const scale = Math.max(.01, imageLayout.scale);
-    for (const cell of state.node.querySelectorAll('textarea')) {
+    for (const cell of state.node.querySelectorAll('.table-editor-cell')) {
       const row = Number(cell.dataset.cell.split(',')[0]);
       cell.style.height = '0px';
       heights[row] = Math.max(heights[row], (cell.scrollHeight + 2) / scale);
       cell.style.height = '100%'; cell.scrollTop = 0;
     }
     const height = heights.reduce((sum, value) => sum + value, 0), delta = height - before.h;
-    state.item = { ...state.item, rowHeights: heights, h: height };
+    state.item = { ...state.item, rowHeights: heights, rowMinHeights: state.minRowHeights, h: height };
     elements = elements.map(entry => {
       if (entry.id === state.item.id) return state.item;
       const box = elementBounds(entry);
-      if (delta > 0 && box.y >= before.y + before.h - 2 && box.x < before.x + before.w && box.x + box.w > before.x) {
+      if (Math.abs(delta) > .01 && box.y >= before.y + before.h - 2 && box.x < before.x + before.w && box.x + box.w > before.x) {
         const moved = moveElement(entry, 0, delta); state.shifted.set(entry.id, moved); return moved;
       }
       return entry;
@@ -800,7 +864,7 @@
     state.node.style.width = `${Math.max(30, w * imageLayout.scale)}px`; state.node.style.height = `${Math.max(25, h * imageLayout.scale)}px`;
     state.node.style.gridTemplateColumns = `repeat(${cols},minmax(0,1fr))`;
     state.node.style.gridTemplateRows = tableRowHeights(state.item).map(height => `${height * imageLayout.scale}px`).join(' ');
-    for (const cell of state.node.querySelectorAll('textarea')) {
+    for (const cell of state.node.querySelectorAll('.table-editor-cell')) {
       cell.style.font = `${12 * imageLayout.scale}px sans-serif`;
       cell.style.lineHeight = `${16 * imageLayout.scale}px`;
       cell.style.padding = `${3 * imageLayout.scale}px ${5 * imageLayout.scale}px`;
@@ -812,20 +876,28 @@
     const area = $('.sketch-drawing-area');
     const rows = Math.max(1, Math.min(30, Number(item.rows) || 1)), cols = Math.max(1, Math.min(20, Number(item.cols) || 1));
     const node = document.createElement('div'); node.className = 'table-editor'; node.setAttribute('role', 'group'); node.setAttribute('aria-label', `Edit ${rows} by ${cols} table`);
-    const state = { boardId: selectedBoard.id, item, node, shifted: new Map() }; tableEditor = state;
+    const state = { boardId: selectedBoard.id, item, node, shifted: new Map(), minRowHeights: Array.from({ length: rows }, (_, row) => Math.max(24, Number(item.rowMinHeights?.[row]) || (item.rowHeights ? 24 : Number(item.h) / rows) || 24)) }; tableEditor = state;
     for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
-      const cell = document.createElement('textarea'); cell.className = 'table-editor-cell'; cell.dataset.cell = `${row},${col}`; cell.setAttribute('aria-label', `Row ${row + 1}, column ${col + 1}`); cell.value = String(item.cellText?.[`${row},${col}`] ?? item.cellText?.[`${row}-${col}`] ?? ''); cell.spellcheck = false;
+      const cell = document.createElement('div'); cell.className = 'table-editor-cell'; cell.dataset.cell = `${row},${col}`;
+      cell.contentEditable = 'true'; cell.setAttribute('role', 'textbox'); cell.setAttribute('aria-multiline', 'true');
+      cell.setAttribute('aria-label', `Row ${row + 1}, column ${col + 1}`);
+      cell.style.whiteSpace = 'pre-wrap'; cell.style.overflowWrap = 'anywhere'; cell.style.cursor = 'text';
+      richEditorContent(cell, String(item.cellText?.[`${row},${col}`] ?? item.cellText?.[`${row}-${col}`] ?? ''), item.cellFontRuns?.[`${row},${col}`]);
+      cell.spellcheck = false;
+      cell.addEventListener('paste', event => { event.preventDefault(); document.execCommand('insertText', false, event.clipboardData?.getData('text/plain') || ''); });
       cell.addEventListener('input', () => {
-        const cellText = { ...(state.item.cellText || {}), [cell.dataset.cell]: cell.value };
+        const rich = readRichEditor(cell);
+        const cellText = { ...(state.item.cellText || {}), [cell.dataset.cell]: rich.text };
         delete cellText[cell.dataset.cell.replace(',', '-')];
-        state.item = { ...state.item, cellText }; state.dirty = true; elements = elements.map((entry) => entry.id === state.item.id ? state.item : entry);
+        state.item = { ...state.item, cellText, cellFontRuns: { ...(state.item.cellFontRuns || {}), [cell.dataset.cell]: rich.fontRuns } };
+        state.dirty = true; elements = elements.map((entry) => entry.id === state.item.id ? state.item : entry);
         resizeTableRows(state); clearTimeout(tableSaveTimer); tableSaveTimer = setTimeout(() => saveTableEditor(state), 500); renderCanvas();
       });
       cell.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); closeTableEditor(); } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); closeTableEditor(); } });
       node.append(cell);
     }
-    node.addEventListener('focusout', (event) => { if (!node.contains(event.relatedTarget)) { clearTimeout(tableSaveTimer); tableSaveTimer = setTimeout(() => closeTableEditor(state), 120); } });
-    area.append(node); area.classList.add('editing-table'); positionTableEditor(); node.querySelector('textarea')?.focus();
+    node.addEventListener('focusout', (event) => { if (!node.contains(event.relatedTarget) && !usingFormatToolbar(event.relatedTarget)) { clearTimeout(tableSaveTimer); tableSaveTimer = setTimeout(() => closeTableEditor(state), 120); } });
+    area.append(node); area.classList.add('editing-table'); positionTableEditor(); node.querySelector('.table-editor-cell')?.focus();
   }
 
   async function saveTableEditor(state) {
@@ -929,7 +1001,7 @@
   function closeTextElementEditor(state = textElementEditor) {
     if (!state) return;
     clearTimeout(textElementSaveTimer);
-    state.item = { ...state.item, text: state.node.innerText.replace(/\r\n?/g, '\n') };
+    state.item = { ...state.item, ...readRichEditor(state.node) };
     if (state.isNew && !state.item.text.trim()) {
       if (textElementEditor === state) textElementEditor = null;
       state.node.remove();
@@ -955,15 +1027,16 @@
     if (!selectedBoard || !item || item._kind !== 'textbox' || item.isPageBody) return;
     closePageBodyEditor();
     closeTextElementEditor();
+    closeTableEditor();
     selection = new Set();
     const editor = document.createElement('div');
     editor.className = 'page-body-editor text-element-editor';
-    editor.contentEditable = 'plaintext-only';
+    editor.contentEditable = 'true';
     editor.setAttribute('role', 'textbox');
     editor.setAttribute('aria-label', 'Edit sketch text');
     editor.setAttribute('aria-multiline', 'true');
     editor.spellcheck = true;
-    editor.textContent = String(item.text || '');
+    richEditorContent(editor, String(item.text || ''), item.fontRuns);
     const initialElements = elements.map(cloneElement);
     const state = { boardId: selectedBoard.id, item: { ...item }, node: editor, isNew: Boolean(options.isNew), baseHeight: Math.max(1, Number(item.h) || 1), baseElements: initialElements, savedElements: initialElements.map(cloneElement), layoutElements: initialElements.map(cloneElement), savePromise: Promise.resolve() };
     textElementEditor = state;
@@ -979,9 +1052,9 @@
         event.preventDefault(); closeTextElementEditor(state);
       }
     });
-    editor.addEventListener('blur', () => {
-      if (textElementEditor === state) closeTextElementEditor(state);
-    }, { once: true });
+    editor.addEventListener('blur', event => {
+      if (textElementEditor === state && !usingFormatToolbar(event.relatedTarget)) closeTextElementEditor(state);
+    });
     editor.addEventListener('paste', (event) => handleSketchEditorPaste(event, editor));
     editor.focus({ preventScroll: true });
     if (Number.isFinite(options.clientX) && Number.isFinite(options.clientY)) caretAtPoint(editor, options.clientX, options.clientY);
@@ -1006,7 +1079,8 @@
   }
 
   function updateTextElementFlow(state) {
-    const text = state.node.innerText.replace(/\r\n?/g, '\n');
+    const rich = readRichEditor(state.node);
+    const text = rich.text;
     const original = state.baseElements.find((el) => el.id === state.item.id);
     if (!original) return;
     const baseBox = elementBounds(original);
@@ -1015,7 +1089,7 @@
     const height = Math.max(state.baseHeight, measuredHeight);
     const delta = height - state.baseHeight;
     const layout = state.baseElements.map((element) => {
-      if (element.id === original.id) return { ...element, text, h: height };
+      if (element.id === original.id) return { ...element, text, fontRuns: rich.fontRuns, h: height };
       if (!delta || element.isPageBody) return element;
       const box = elementBounds(element);
       const followsVertically = box.y >= baseBox.y + baseBox.h - 2;
@@ -1109,7 +1183,7 @@
         const previousRecord = { ...previous }; delete previousRecord._kind;
         return JSON.stringify(currentRecord) !== JSON.stringify(previousRecord);
       });
-      if (draft.id && draft.text === state.lastSavedText && !changedElements.length) return;
+      if (draft.id && draft.text === state.lastSavedText && JSON.stringify(draft.fontRuns || []) === state.lastSavedFontRuns && !changedElements.length) return;
       const item = { ...draft }; delete item._kind;
       const collection = boardsRef.doc(state.boardId).collection('elements');
       if (Number(item.id) > 0) {
@@ -1141,7 +1215,7 @@
         if (bodyDraft) bodyDraft.id = item.id;
       }
       state.item = { ...item, _kind: 'textbox' };
-      state.lastSavedText = item.text;
+      state.lastSavedText = item.text; state.lastSavedFontRuns = JSON.stringify(item.fontRuns || []);
       changedElements.forEach((element) => {
         const savedIndex = state.savedElements.findIndex((saved) => saved.id === element.id);
         if (savedIndex >= 0) state.savedElements[savedIndex] = cloneElement(element);
@@ -1169,6 +1243,8 @@
 
   function startPageBodyEditor(worldPoint, initialText = '', options = {}) {
     if (!selectedBoard) return;
+    closeTableEditor();
+    closeTextElementEditor();
     let state = pageBodyEditor;
     if (!state || state.boardId !== selectedBoard.id || !state.node.isConnected) {
       const existing = elements.find(isPageBody);
@@ -1185,13 +1261,13 @@
       state = { boardId: selectedBoard.id, item, text, lastSavedText: existing?.text || '', baseHeight: Math.max(40, Number(item.h) || 40), baseElements: initialElements, savedElements: initialElements.map(cloneElement), layoutElements: initialElements.map(cloneElement), savePromise: Promise.resolve() };
       const editor = document.createElement('div');
       editor.className = 'page-body-editor';
-      editor.contentEditable = 'plaintext-only';
+      editor.contentEditable = 'true';
       editor.setAttribute('role', 'textbox');
       editor.setAttribute('aria-label', 'Notebook page text');
       editor.setAttribute('aria-multiline', 'true');
       editor.dataset.placeholder = elements.some((element) => !isPageBody(element)) ? '' : 'Click anywhere and keep typing…';
       editor.spellcheck = true;
-      editor.textContent = text;
+      richEditorContent(editor, text, item.fontRuns);
       state.node = editor;
       pageBodyEditor = state;
       area.append(editor);
@@ -1209,9 +1285,9 @@
         if (event.key === 'Escape') { event.preventDefault(); closePageBodyEditor(state); }
         else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); closePageBodyEditor(state); }
       });
-      editor.addEventListener('blur', () => {
-        if (pageBodyEditor === state) closePageBodyEditor(state);
-      }, { once: true });
+      editor.addEventListener('blur', event => {
+        if (pageBodyEditor === state && !usingFormatToolbar(event.relatedTarget)) closePageBodyEditor(state);
+      });
       editor.addEventListener('paste', (event) => handleSketchEditorPaste(event, editor));
     }
 
@@ -1672,7 +1748,7 @@
   $('#board-delete-selection').addEventListener('click', deleteSelection);
   $('#board-image-table').addEventListener('click', imageToEditableTable);
   $('#board-font-size').addEventListener('change', (event) => { event.target.value = String(Math.max(10, Math.min(96, Number(event.target.value) || 20))); formatSelectedText({ fontSize: Number(event.target.value) }); });
-  $('#board-font-family').addEventListener('change', (event) => formatSelectedText({ fontFamily: event.target.value }));
+  $('#board-font-family').addEventListener('change', (event) => { if (!applySelectedFont(event.target.value)) formatSelectedText({ fontFamily: event.target.value }); });
   function updateZoom(nextZoom, fit = false) {
     const area = $('.sketch-drawing-area');
     const oldCenter = pageCenter();
