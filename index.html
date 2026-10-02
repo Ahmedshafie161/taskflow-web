@@ -41,6 +41,9 @@
     .tree-toggle{width:21px;height:21px;flex:0 0 21px;border:0;border-radius:5px;background:transparent;color:var(--muted);cursor:pointer;padding:0}.tree-toggle:hover{background:var(--surface-2);color:var(--ink)}.board-entry[draggable="true"]{cursor:grab}.board-entry.dragging{opacity:.45}.board-entry.drop-target{outline:2px solid var(--accent);background:var(--accent-soft)}.panel-heading .tree-collapse-all{height:26px;padding:0 8px;border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--muted);font-size:10px;cursor:pointer}.table-editor{position:absolute;z-index:3;display:grid;overflow:hidden;border:1.5px solid var(--accent);background:transparent;box-shadow:0 2px 12px rgba(0,0,0,.14)}.table-editor-cell{min-width:0;min-height:0;width:100%;height:100%;padding:3px 5px;border:0;border-right:1px solid color-mix(in srgb,var(--ink) 55%,transparent);border-bottom:1px solid color-mix(in srgb,var(--ink) 55%,transparent);outline:0;background:color-mix(in srgb,var(--surface) 88%,transparent);color:var(--ink);font:12px 'DM Sans',sans-serif;resize:none;overflow:hidden}.table-editor-cell:focus{background:var(--surface);box-shadow:inset 0 0 0 1px var(--accent)}.sketch-drawing-area.editing-table canvas{opacity:.56}
     #sketch-view:fullscreen{padding:5px 8px 7px;gap:4px;background:var(--bg)}#sketch-view:fullscreen .sketch-toolbar{min-height:30px;gap:5px;margin:0}#sketch-view:fullscreen .sketch-toolbar h1,#sketch-view:fullscreen .sketch-toolbar p,#sketch-view:fullscreen .sketch-toolbar .spacer,#sketch-view:fullscreen .sync-state,#sketch-view:fullscreen .sketch-exit,#sketch-view:fullscreen .firebase-warning,#sketch-view:fullscreen .media-auth-actions{display:none}#sketch-view:fullscreen .sketch-toolbar .primary{padding:5px 8px;font-size:0;height:27px;min-width:30px}#sketch-view:fullscreen .sketch-toolbar .primary:after{content:'＋';font-size:15px}#sketch-view:fullscreen .sketch-fullscreen{height:27px;padding:0 8px;font-size:10px;margin-left:auto}#sketch-view:fullscreen .sketch-layout{gap:5px}#sketch-view:fullscreen .editor-heading{min-height:34px;padding:3px 7px;gap:5px}#sketch-view:fullscreen .editor-heading small,#sketch-view:fullscreen .editor-heading .board-actions{display:none}#sketch-view:fullscreen .editor-heading .board-panel-toggle{height:27px;padding:0 8px;font-size:11px}#sketch-view:fullscreen .editor-heading .board-name-input{font-size:12px;padding:2px 5px}#sketch-view:fullscreen .editor-quick-actions .tool{height:25px;font-size:10px;padding:0 6px}#sketch-view:fullscreen .sketch-ribbon-tabs{height:23px}#sketch-view:fullscreen .sketch-ribbon-tabs button{font-size:9px;padding:0 9px}#sketch-view:fullscreen .sketch-ribbon{min-height:34px;padding:2px 6px}#sketch-view:fullscreen .sketch-ribbon .ribbon-group{min-height:28px}#sketch-view:fullscreen .sketch-ribbon .tool{height:25px;font-size:10px;padding:0 6px}#sketch-view:fullscreen .sketch-drawing-area{min-height:0}#sketch-view:fullscreen .sketch-links{display:none}#sketch-view:fullscreen .board-panel{position:absolute;z-index:6;top:0;bottom:0;left:0;width:min(300px,38vw);box-shadow:0 8px 35px rgba(0,0,0,.25)}#sketch-view:fullscreen .sketch-layout.boards-hidden .board-panel{display:none}
   </style>
+<style id="firebase-workspace-style">
+.workspace-sync,.workspace-filters{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0;color:var(--muted);font-size:12px}.workspace-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:20px 0}.workspace-metrics strong{font-size:23px}.workspace-row{display:flex;align-items:center;gap:12px;padding:15px 0;border-bottom:1px solid var(--line)}.workspace-row:last-child{border-bottom:0}.workspace-detail{flex:1;min-width:0}.workspace-detail strong{display:block;overflow-wrap:anywhere}.workspace-detail small{display:block;color:var(--muted);margin-top:6px;line-height:1.6}.workspace-detail p{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);font-size:12px}.workspace-detail .done-text{text-decoration:line-through;color:var(--muted)}.workspace-empty{padding:30px 8px;text-align:center;color:var(--muted)}.workspace-note{color:var(--muted);font-size:12px;line-height:1.6}.workspace-columns{display:grid;grid-template-columns:1fr 1fr;gap:16px}.workspace-track{padding:12px 0;border-bottom:1px solid var(--line)}.workspace-track audio{width:100%;margin:12px 0}.workspace-dialog{width:min(620px,94vw);max-height:85vh;overflow:auto;padding:25px;border:1px solid var(--line);border-radius:18px;background:var(--surface);color:var(--ink)}.workspace-dialog::backdrop{background:#1118}.workspace-form{display:grid;grid-template-columns:1fr 1fr;gap:16px}.workspace-form label{display:grid;gap:7px;font-size:12px;color:var(--muted)}.workspace-form input,.workspace-form textarea,.workspace-form select,.workspace-filters select,.workspace-filters input{min-width:0;width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2);color:var(--ink);font:inherit}.workspace-filters select,.workspace-filters input{width:auto}.workspace-form textarea{min-height:80px}.form-error{color:#c34343;font-size:13px}.workspace-sync .tool:first-of-type{margin-left:auto}#dashboard-view>.card,#dashboard-view>.workspace-columns{margin-bottom:18px}@media(max-width:650px){.workspace-metrics{grid-template-columns:1fr}.workspace-columns,.workspace-form{grid-template-columns:1fr}.workspace-row{flex-wrap:wrap}.workspace-detail{min-width:55%}.workspace-metrics strong{font-size:20px}}
+</style>
 </head>
 <body>
   <div class="app">
@@ -62,25 +65,7 @@
     </aside>
     <main>
       <header class="topbar"><div class="crumb">Workspace &nbsp;/&nbsp; <b id="breadcrumb">My tasks</b></div><div class="top-actions"><label class="search"><input id="search" placeholder="Search anything…" aria-label="Search tasks"><span>⌕</span></label><button class="icon-btn" id="theme-toggle" aria-label="Toggle dark mode">☾</button><button class="icon-btn" id="notify" aria-label="Notifications">♧</button></div></header>
-      <div id="dashboard-view">
-      <section class="hello"><div><div class="eyebrow" id="today">MONDAY, SEPTEMBER 29</div><h1 id="greeting">Good morning, Ahmed <span style="font-size:23px">☀️</span></h1><p>Make today count. You're doing great.</p></div><button class="primary" id="add-task">＋ &nbsp;Add task</button></section>
-      <section class="date-strip" aria-label="Choose a day">
-        <button class="date"><small>FRI</small><b>26</b></button><button class="date"><small>SAT</small><b>27</b></button><button class="date"><small>SUN</small><b>28</b></button><button class="date selected"><small>MON</small><b>29</b></button><button class="date"><small>TUE</small><b>30</b></button><button class="date"><small>WED</small><b>01</b></button><button class="date"><small>THU</small><b>02</b></button><button class="date"><small>FRI</small><b>03</b></button>
-      </section>
-      <div class="content-grid">
-        <div class="column">
-          <section class="card progress-card"><div class="card-head" style="margin-bottom:0"><div><h2>Today's progress</h2><p id="progress-copy">A little progress each day adds up</p></div><b id="progress-number" style="font:700 17px Manrope;color:var(--accent)">2 / 6</b></div><div class="progress-line"><span id="progress-fill"></span></div><div class="progress-foot"><span>Keep your momentum</span><span id="progress-percent">33% complete</span></div></section>
-          <section class="card"><div class="card-head"><div><h2>My tasks</h2><p id="task-date">Monday · Today</p></div><button class="text-button" id="filter-tasks">All tasks &nbsp;⌄</button></div><div class="task-list" id="task-list"></div></section>
-          <section class="card sketch-card"><div class="sketch-top"><div class="card-head"><div><h2>Quick sketch</h2><p>Capture an idea before it gets away</p></div><button class="text-button" data-page="Sketch">Open canvas ↗</button></div></div><div class="canvas-wrap"><canvas id="canvas"></canvas><span class="canvas-note">Draw your next idea here</span></div><div class="sketch-tools"><button class="tool active" id="pen-tool">✎ Pen</button><button class="tool" id="erase-tool">◌ Erase</button><span class="tool-spacer"></span><span class="board-title">Untitled sketch</span><button class="tool" id="clear-canvas" aria-label="Clear sketch">⌫</button></div></section>
-        </div>
-        <div class="column">
-          <section class="card"><div class="card-head"><div><h2>At a glance</h2><p>Your personal overview</p></div><button class="text-button" data-page="Finance">This week ⌄</button></div><div class="summary"><div class="metric"><span>Tasks done</span><strong id="metric-tasks">2</strong><small>↑ Great momentum</small></div><div class="metric"><span>Focus time</span><strong>2.4h</strong><small>↑ 18% this week</small></div><div class="metric"><span>Steps today</span><strong>6,240</strong><small>of 8,000 goal</small></div><div class="metric"><span>Saved this month</span><strong>$420</strong><small>↑ On track</small></div></div></section>
-          <section class="card"><div class="card-head"><div><h2>Focus time</h2><p>A steady week starts here</p></div><span class="tag">4h 20m</span></div><div class="week-bars"><div class="bar-group"><div class="bar" style="height:42%"></div><small>M</small></div><div class="bar-group"><div class="bar" style="height:67%"></div><small>T</small></div><div class="bar-group"><div class="bar current" style="height:76%"></div><small>W</small></div><div class="bar-group"><div class="bar" style="height:49%"></div><small>T</small></div><div class="bar-group"><div class="bar" style="height:88%"></div><small>F</small></div><div class="bar-group"><div class="bar" style="height:34%"></div><small>S</small></div><div class="bar-group"><div class="bar" style="height:55%"></div><small>S</small></div></div></section>
-          <section class="card"><div class="card-head"><div><h2>Today's meals</h2><p>1,240 of 2,000 kcal</p></div><button class="text-button" data-page="Nutrition">View plan ↗</button></div><div class="progress-line"><span style="width:62%;background:var(--green)"></span></div><div class="meal"><div class="meal-icon">🥑</div><div><strong>Avocado toast</strong><small>Breakfast · 8:30 AM</small></div><span class="kcal">320 kcal</span></div><div class="meal"><div class="meal-icon">🥗</div><div><strong>Garden bowl</strong><small>Lunch · 12:45 PM</small></div><span class="kcal">520 kcal</span></div></section>
-          <section class="card" style="background:linear-gradient(140deg,var(--accent-soft),var(--surface));border-color:transparent"><div style="font-size:11px;color:var(--accent);font-weight:700">✦ &nbsp;A MOMENT FOR YOU</div><p style="font:600 16px Manrope;line-height:1.5;margin:12px 0 8px">“The secret of getting ahead is getting started.”</p><small style="color:var(--muted)">— Mark Twain</small></section>
-        </div>
-      </div>
-      </div>
+      <div id="dashboard-view"><p class="workspace-empty">Loading your Firebase workspace…</p></div>
       <section id="sketch-view" hidden>
         <div class="sketch-toolbar"><button id="sketch-exit" class="sketch-exit" type="button" title="Back to tasks">← Back</button><div><h1>Sketch notebook</h1><p>Your boards and pages, synced with Firebase</p></div><span class="spacer"></span><span class="sync-state"><i class="sync-dot" id="sync-dot"></i><span id="sync-label">Connecting to Firebase…</span></span><button class="primary" id="new-board">＋ New page</button><button id="sketch-fullscreen" class="sketch-fullscreen" type="button" title="Enter browser full screen">⛶ Full screen</button></div>
         <div class="firebase-warning" id="firebase-warning" hidden></div>
@@ -107,38 +92,197 @@
       </section>
     </main>
   </div>
-  <nav class="mobile-nav" aria-label="Mobile navigation"><button class="active" data-page="Tasks"><span>☷</span>Tasks</button><button data-page="Sketch"><span>✎</span>Sketch</button><button data-page="Nutrition"><span>◉</span>Health</button><button data-page="Finance"><span>▤</span>Finance</button><button data-page="Style"><span>◇</span>More</button></nav>
+  <nav class="mobile-nav" aria-label="Mobile navigation"><button class="active" data-page="Tasks"><span>☷</span>Tasks</button><button data-page="Sketch"><span>✎</span>Sketch</button><button data-page="Nutrition"><span>◉</span>Health</button><button data-page="Finance"><span>▤</span>Finance</button><button data-page="Music"><span>♫</span>Music</button></nav>
   <div class="toast" id="toast" role="status"></div>
-  <script>
-    const starter=[
-      {title:'Review project proposal',time:'9:30 AM',tag:'Work',color:'',done:true},
-      {title:'Sketch homepage wireframes',time:'10:30 AM',tag:'Creative',color:'green',done:true},
-      {title:'Send notes to the team',time:'11:45 AM',tag:'Work',color:'',done:false},
-      {title:'Pick up groceries',time:'1:30 PM',tag:'Personal',color:'orange',done:false},
-      {title:'Finish reading chapter 4',time:'3:00 PM',tag:'Learning',color:'green',done:false},
-      {title:'Evening walk',time:'6:00 PM',tag:'Wellness',color:'orange',done:false}
-    ];
-    let tasks=JSON.parse(localStorage.getItem('taskflow.tasks')||'null')||starter;
-    const list=document.querySelector('#task-list');let filter='all';let toastTimer;
-    function save(){localStorage.setItem('taskflow.tasks',JSON.stringify(tasks));render()}
-    function render(){const q=document.querySelector('#search').value.toLowerCase();const visible=tasks.filter(t=>(filter==='all'||(filter==='open'&&!t.done)||(filter==='done'&&t.done))&&t.title.toLowerCase().includes(q));list.innerHTML=visible.map(t=>{const i=tasks.indexOf(t);return `<div class="task-row"><button class="check ${t.done?'done':''}" data-check="${i}" aria-label="${t.done?'Mark incomplete':'Complete task'}"></button><div><div class="task-title ${t.done?'done-text':''}">${escapeHtml(t.title)}</div><div class="task-meta"><span>◷ ${t.time}</span></div></div><span class="tag ${t.color}">${escapeHtml(t.tag)}</span></div>`}).join('')||'<p style="color:var(--muted);font-size:12px;text-align:center;padding:20px">No matching tasks</p>';const done=tasks.filter(t=>t.done).length;const pct=tasks.length?Math.round(done/tasks.length*100):0;document.querySelector('#progress-number').textContent=`${done} / ${tasks.length}`;document.querySelector('#progress-percent').textContent=`${pct}% complete`;document.querySelector('#progress-fill').style.width=pct+'%';document.querySelector('#metric-tasks').textContent=done;document.querySelector('#nav-count').textContent=tasks.filter(t=>!t.done).length}
-    function escapeHtml(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-    function showToast(msg){const el=document.querySelector('#toast');el.textContent=msg;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),2200)}
-    list.addEventListener('click',e=>{const b=e.target.closest('[data-check]');if(b){tasks[+b.dataset.check].done=!tasks[+b.dataset.check].done;save()}});
-    document.querySelector('#search').addEventListener('input',render);
-    document.querySelector('#add-task').addEventListener('click',()=>{const title=prompt('What would you like to get done?');if(title?.trim()){tasks.push({title:title.trim(),time:'Anytime',tag:'Personal',color:'orange',done:false});save();showToast('Task added to your day')}});
-    document.querySelector('#filter-tasks').addEventListener('click',()=>{filter=filter==='all'?'open':filter==='open'?'done':'all';document.querySelector('#filter-tasks').textContent=({all:'All tasks',open:'To do',done:'Completed'})[filter]+'　⌄';render()});
-    document.querySelectorAll('.date').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.date').forEach(x=>x.classList.remove('selected'));b.classList.add('selected');document.querySelector('#task-date').textContent=`${b.querySelector('small').textContent[0]+b.querySelector('small').textContent.slice(1).toLowerCase()} · ${b.querySelector('b').textContent==='29'?'Today':'Selected day'}`}));
-    const themeBtn=document.querySelector('#theme-toggle');function theme(v){document.documentElement.dataset.theme=v;themeBtn.textContent=v==='dark'?'☀':'☾';localStorage.setItem('taskflow.theme',v)}theme(localStorage.getItem('taskflow.theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'));themeBtn.addEventListener('click',()=>theme(document.documentElement.dataset.theme==='dark'?'light':'dark'));
-    document.querySelector('#notify').addEventListener('click',()=>showToast('You’re all caught up ✨'));
-    document.querySelectorAll('[data-page]').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('[data-page]').forEach(x=>x.classList.remove('active'));document.querySelectorAll(`[data-page="${b.dataset.page}"]`).forEach(x=>x.classList.add('active'));const sketches=b.dataset.page==='Sketch';document.querySelector('#dashboard-view').hidden=sketches;document.querySelector('#sketch-view').hidden=!sketches;document.body.classList.toggle('sketch-active',sketches);if(sketches)document.querySelector('.sketch-layout').classList.toggle('boards-hidden',matchMedia('(max-width:780px)').matches);document.querySelector('#breadcrumb').textContent=sketches?'Sketches':b.dataset.page==='Tasks'?'My tasks':b.dataset.page;if(sketches)window.dispatchEvent(new Event('taskflow:sketches-open'));else if(b.dataset.page!=='Tasks')showToast(`${b.dataset.page} workspace selected`)}));
-    const canvas=document.querySelector('#canvas'),ctx=canvas.getContext('2d');let drawing=false,erase=false,last=null;function resizeCanvas(){const r=canvas.getBoundingClientRect(),d=window.devicePixelRatio||1;const old=document.createElement('canvas');old.width=canvas.width;old.height=canvas.height;old.getContext('2d').drawImage(canvas,0,0);canvas.width=r.width*d;canvas.height=r.height*d;ctx.setTransform(d,0,0,d,0,0);ctx.lineCap='round';ctx.lineJoin='round';if(old.width&&old.height)ctx.drawImage(old,0,0,old.width,old.height,0,0,r.width,r.height)}new ResizeObserver(resizeCanvas).observe(canvas);function point(e){const r=canvas.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top}}canvas.addEventListener('pointerdown',e=>{drawing=true;last=point(e);canvas.setPointerCapture(e.pointerId)});canvas.addEventListener('pointermove',e=>{if(!drawing)return;const p=point(e);ctx.globalCompositeOperation=erase?'destination-out':'source-over';ctx.strokeStyle=erase?'rgba(0,0,0,1)':'#6558e8';ctx.lineWidth=erase?15:2.5;ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p});canvas.addEventListener('pointerup',()=>drawing=false);canvas.addEventListener('pointercancel',()=>drawing=false);document.querySelector('#pen-tool').onclick=()=>{erase=false;document.querySelector('#pen-tool').classList.add('active');document.querySelector('#erase-tool').classList.remove('active')};document.querySelector('#erase-tool').onclick=()=>{erase=true;document.querySelector('#erase-tool').classList.add('active');document.querySelector('#pen-tool').classList.remove('active')};document.querySelector('#clear-canvas').onclick=()=>{ctx.clearRect(0,0,canvas.width,canvas.height);showToast('Sketch cleared')};
-    render();const now=new Date();const hr=now.getHours();document.querySelector('#greeting').innerHTML=`Good ${hr<12?'morning':hr<18?'afternoon':'evening'}, Ahmed <span style="font-size:23px">${hr<18?'☀️':'🌙'}</span>`;
-  </script>
   <script src="https://www.gstatic.com/firebasejs/12.19.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/12.19.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore-compat.js"></script>
   <script src="firebase-config.js"></script>
+  <script id="firebase-workspaces">
+/* Shared Android/Firestore workspaces. No demo records are written on startup. */
+(() => {
+  const $ = s => document.querySelector(s);
+  const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  let toastTimer;
+  window.showToast = message => { $('#toast').textContent = message; $('#toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('show'), 3500); };
+  const theme = value => { document.documentElement.dataset.theme = value; $('#theme-toggle').textContent = value === 'dark' ? '☀' : '☾'; localStorage.setItem('taskflow.theme', value); };
+  theme(localStorage.getItem('taskflow.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+  $('#theme-toggle').onclick = () => theme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+  const mount = $('#dashboard-view');
+  const number = value => Number(value) || 0;
+  const amount = value => number(value).toLocaleString(undefined, {maximumFractionDigits:2});
+  const millis = value => value?.toMillis ? value.toMillis() : number(value);
+  const dateLabel = value => millis(value) ? new Date(millis(value)).toLocaleDateString() : 'No date';
+  const dateInput = value => { const d = new Date(millis(value) || Date.now()); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
+  const dayMillis = value => new Date(`${value}T00:00:00`).getTime();
+  const datetimeInput = value => millis(value) ? `${dateInput(value)}T${new Date(millis(value)).toTimeString().slice(0,5)}` : '';
+  const safeUrl = value => { try { const u = new URL(value); return ['http:','https:'].includes(u.protocol) ? u.href : ''; } catch { return ''; } };
+  const button = (action,label,id='') => `<button class="tool" data-action="${action}" data-id="${esc(id)}">${label}</button>`;
+  const empty = message => `<p class="workspace-empty">${esc(message)}</p>`;
+  const metric = (label,value) => `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
+  const card = (title,content,actions='') => `<section class="card"><div class="card-head"><h2>${esc(title)}</h2><div>${actions}</div></div>${content}</section>`;
+  const state = { view:'Tasks', data:{}, errors:{}, loaded:new Set(), date:dateInput(Date.now()), history:false, scenario:'', taskFilter:'all', query:'', pageLimit:200, listeners:[], generation:0 };
+  let db;
+  try { if (!window.firebase || !window.taskflowFirebaseConfig) throw Error('Firebase configuration is unavailable.'); db=(firebase.apps.length ? firebase.app() : firebase.initializeApp(window.taskflowFirebaseConfig)).firestore(); }
+  catch(error) { mount.innerHTML=empty(error.message); return; }
+  const data = key => state.data[key] || [];
+  function stop() { state.listeners.forEach(unsubscribe=>unsubscribe()); state.listeners=[]; state.generation++; }
+  function watch(key, query) {
+    const generation=state.generation;
+    state.listeners.push(query.onSnapshot(snapshot => {
+      if (generation!==state.generation) return;
+      state.data[key]=snapshot.docs.map(doc=>({...doc.data(),id:doc.id})); state.loaded.add(key); delete state.errors[key]; render();
+    }, error => { if(generation!==state.generation)return; state.errors[key]=error.message; state.loaded.add(key); render(); }));
+  }
+  function subscribe() {
+    stop(); state.data={};state.errors={};state.loaded.clear();
+    if(state.view==='Tasks') { watch('tasks',db.collection('tasks')); watch('categories',db.collection('categories')); }
+    if(state.view==='Finance') watch('finance',db.collection('finance_scenarios').orderBy('orderIndex'));
+    if(state.view==='Music') watch('music',db.collection('music_tracks').orderBy('addedAt','desc').limit(state.pageLimit));
+    if(state.view==='Nutrition') {
+      watch('profile',db.collection('user_profile').orderBy('createdAt','desc').limit(1));
+      for(const name of ['food_entry','water_entry','training_session','weight_entry']) {
+        let query=db.collection(name);
+        if(state.history) query=query.orderBy('date','desc').limit(state.pageLimit);
+        else { const start=dayMillis(state.date), end=new Date(start); end.setDate(end.getDate()+1); query=query.where('date','>=',start).where('date','<',end.getTime()); }
+        watch(name,query);
+      }
+    }
+    render();
+  }
+  function navigate(view) {
+    state.view=view;state.query='';$('#search').value='';
+    const sketch=view==='Sketch';document.body.classList.toggle('sketch-active',sketch);mount.hidden=sketch;$('#sketch-view').hidden=!sketch;
+    document.querySelectorAll('[data-page]').forEach(node=>node.classList.toggle('active',node.dataset.page===view));
+    $('#breadcrumb').textContent=view==='Tasks'?'My tasks':view;
+    if(sketch){stop();$('.sketch-layout').classList.toggle('boards-hidden',matchMedia('(max-width:780px)').matches);window.dispatchEvent(new Event('taskflow:sketches-open'));return;}
+    subscribe();
+  }
+  document.querySelectorAll('[data-page]').forEach(node=>node.addEventListener('click',()=>navigate(node.dataset.page)));
+  $('#search').setAttribute('aria-label','Search current workspace');$('#search').placeholder='Search this workspace…';
+  $('#search').addEventListener('input',event=>{state.query=event.target.value.toLocaleLowerCase();render();});
+  $('#notify').onclick=()=>showToast('Changes save to the same Firebase project as Android.');
+  $('.focus-card').innerHTML='<span>CONNECTED WORKSPACE</span><strong>Taskflow</strong><small>Your Android data, on the web</small>';
+  document.querySelectorAll('.nav .count').forEach(node=>node.textContent='');
+  const matches = text => String(text || '').toLocaleLowerCase().includes(state.query);
+  function render() {
+    if(state.view==='Sketch')return;
+    const headings={Tasks:'My tasks',Finance:'Finance',Nutrition:'Nutrition',Music:'Music library'};
+    const add={Tasks:'task',Finance:'scenario',Nutrition:'food',Music:'music'};
+    const content=state.view==='Tasks'?tasksView():state.view==='Finance'?financeView():state.view==='Nutrition'?nutritionView():state.view==='Music'?musicView():empty('This workspace is not connected yet. Choose Tasks, Finance, Nutrition, Music, or Sketches.');
+    mount.innerHTML=`<header class="hello"><div><div class="eyebrow">YOUR SHARED WORKSPACE</div><h1>${esc(headings[state.view]||state.view)}</h1><p>Synced with your Android app</p></div>${add[state.view]?button('add-'+add[state.view],'+ Add '+({Tasks:'task',Finance:'scenario',Nutrition:'food',Music:'track'}[state.view])):''}</header><div class="workspace-sync" role="status">${Object.keys(state.errors).length?'Some data could not load':state.loaded.size?'Connected to Firebase':'Loading Firebase…'} ${button('signin','Sign in')}${button('refresh','Refresh')}</div>${Object.entries(state.errors).map(([key,error])=>`<p role="alert" class="firebase-warning">${esc(key)}: ${esc(error)}</p>`).join('')}${content}`;
+  }
+  function tasksView() {
+    const all=data('tasks').slice().sort((a,b)=>millis(b.createdAt)-millis(a.createdAt));
+    const categories=new Map(data('categories').map(c=>[c.id,c.name]));
+    const visible=all.filter(t=>matches(`${t.title} ${t.description||''}`)&&(state.taskFilter==='all'||(state.taskFilter==='open'&&!t.isCompleted)||(state.taskFilter==='done'&&t.isCompleted)||(state.taskFilter==='favorites'&&t.isFavorite)));
+    $('#nav-count').textContent=String(all.filter(t=>!t.isCompleted).length);
+    const roots=new Map(all.map(t=>[t.id,t]));
+    const depth=t=>{let n=0,p=t.parentId,seen=new Set([t.id]);while(p&&roots.has(p)&&!seen.has(p)){seen.add(p);n++;p=roots.get(p).parentId;}return Math.min(5,n);};
+    return `<div class="workspace-metrics">${metric('Total tasks',all.length)}${metric('Completed',all.filter(t=>t.isCompleted).length)}${metric('Open',all.filter(t=>!t.isCompleted).length)}</div><div class="workspace-filters">${['all','open','done','favorites'].map(f=>`<button class="tool ${state.taskFilter===f?'active':''}" data-action="filter" data-id="${f}">${f[0].toUpperCase()+f.slice(1)}</button>`).join('')}</div>`+card('Tasks',visible.map(t=>`<div class="workspace-row" style="padding-left:${depth(t)*18}px"><button class="check ${t.isCompleted?'done':''}" data-action="complete" data-id="${esc(t.id)}" aria-label="${t.isCompleted?'Mark incomplete':'Complete task'}"></button><div class="workspace-detail"><strong class="${t.isCompleted?'done-text':''}">${esc(t.title||'Untitled task')}</strong>${t.description?`<p>${esc(t.description)}</p>`:''}<small>${esc(categories.get(t.categoryId)||'Uncategorized')} · ${esc(t.priority||'NONE')} · ${t.dueDateTime?esc(new Date(millis(t.dueDateTime)).toLocaleString()):'No due date'}${t.parentId&&roots.has(t.parentId)?` · Under ${esc(roots.get(t.parentId).title)}`:''}${t.recurrenceRule?` · ${esc(t.recurrenceRule)}`:''}</small></div>${button('favorite',t.isFavorite?'★':'☆',t.id)}${button('edit-task','Edit',t.id)}</div>`).join('')||empty(state.loaded.has('tasks')?'No matching tasks.':'Loading tasks…'));
+  }
+  function scenario() { const list=data('finance');return list.find(s=>s.id===state.scenario)||list[0]; }
+  function entries(s) { const result=JSON.parse(s.entriesJson||'[]');if(!Array.isArray(result))throw Error('Scenario entries are not an array.');return result; }
+  function financeView() {
+    const selected=scenario();if(!selected)return empty(state.loaded.has('finance')?'No scenarios found.':'Loading scenarios…');state.scenario=selected.id;
+    let items;try{items=entries(selected);}catch(error){return empty(`Cannot read ${selected.name}: ${error.message}`);}
+    const sum=type=>items.filter(e=>e.type===type).reduce((total,e)=>total+number(e.amount),0);
+    return `<div class="workspace-filters"><label>Scenario <select id="finance-scenario">${data('finance').map(s=>`<option value="${esc(s.id)}" ${s.id===selected.id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label>${button('rename-scenario','Rename',selected.id)}${button('add-entry','+ Entry')}</div><div class="workspace-metrics">${metric('Recorded income',amount(sum('INCOME')))}${metric('Recorded expenses',amount(sum('EXPENSE')))}${metric('Recorded balance',amount(sum('INCOME')-sum('EXPENSE')))}</div><p class="workspace-note">Totals show stored entries. Recurrence settings are shown on each entry.</p>`+card(selected.name,items.filter(e=>matches(e.name)).sort((a,b)=>number(b.dateMillis)-number(a.dateMillis)).map(e=>`<div class="workspace-row"><div class="workspace-detail"><strong>${esc(e.name)}</strong><small>${esc(dateLabel(e.dateMillis))} · ${esc(e.type)}${e.recurrence&&e.recurrence!=='NONE'?` · ${esc(e.recurrence)} / ${esc(e.recurrenceInterval||1)}`:''}${e.plannedDateMillis?` · Planned ${esc(dateLabel(e.plannedDateMillis))}`:''}</small></div><strong>${e.type==='EXPENSE'?'−':'+'}${esc(amount(e.amount))}</strong>${button('edit-entry','Edit',e.id)}</div>`).join('')||empty('No entries in this scenario.'));
+  }
+  function nutritionView() {
+    const foods=data('food_entry'),water=data('water_entry'),sessions=data('training_session'),weights=data('weight_entry'),profile=data('profile')[0];
+    const total=key=>foods.reduce((sum,e)=>sum+number(e[key]),0);
+    let html=`<div class="workspace-filters"><label>Date <input id="nutrition-date" type="date" value="${state.date}" ${state.history?'disabled':''}></label>${button('history',state.history?'Selected day':'Recent history')}${button('add-water','+ Water')}${button('add-weight','+ Weight')}${button('add-training','+ Training')}${button('profile',profile?'Edit profile':'Create profile')}</div><div class="workspace-metrics">${metric('Calories',amount(total('calories'))+' kcal')}${metric('Protein / carbs / fat',`${amount(total('protein'))} / ${amount(total('carbs'))} / ${amount(total('fat'))} g`)}${metric('Water',amount(water.reduce((s,e)=>s+number(e.amountMl),0))+' ml')}</div>`;
+    if(profile)html+=card(profile.name||'Nutrition profile',`<p>${esc(profile.goalType)} · ${esc(profile.activityLevel)} · ${esc(amount(profile.heightCm))} cm · ${esc(amount(profile.weightKg))} kg · Goal ${esc(amount(profile.goalWeightKg))} kg</p>`);
+    html+=card('Food log',foods.filter(e=>matches(e.foodName)).map(e=>`<div class="workspace-row"><div class="workspace-detail"><strong>${esc(e.foodName)}</strong><small>${esc(dateLabel(e.date))} · ${esc(e.mealType)} · ${esc(amount(e.quantity))} ${esc(e.unit)}</small></div><span>${esc(amount(e.calories))} kcal</span>${button('edit-food','Edit',e.id)}</div>`).join('')||empty('No food entries in this period.'));
+    html+=`<div class="workspace-columns">`+card('Water',water.map(e=>`<div class="workspace-row"><span>${esc(dateLabel(e.date))}</span><strong>${esc(amount(e.amountMl))} ml</strong></div>`).join('')||empty('No water entries.'))+card('Weight log',weights.map(e=>`<div class="workspace-row"><span>${esc(dateLabel(e.date))}</span><strong>${esc(amount(e.weightKg))} kg</strong>${e.bodyFatPercentage!=null?`<small>${esc(amount(e.bodyFatPercentage))}% body fat</small>`:''}</div>`).join('')||empty('No weight entries.'))+`</div>`;
+    html+=card('Training',sessions.filter(e=>matches(`${e.type} ${e.notes||''}`)).map(e=>`<div class="workspace-row"><div class="workspace-detail"><strong>${esc(e.type)} · ${esc(e.durationMinutes)} min</strong><small>${esc(dateLabel(e.date))} · ${esc(amount(e.caloriesBurned))} kcal · ${esc(e.intensity)}</small><p>${esc(e.notes||'')}</p></div>${button('exercises','Exercises',e.id)}${button('edit-training','Edit',e.id)}</div>`).join('')||empty('No training sessions in this period.'));
+    if(state.history)html+=`<p class="workspace-note">Up to ${state.pageLimit} most recent records per log.</p>${button('more','Load more history')}`;
+    return html;
+  }
+  function musicView() {
+    return card('Your tracks',data('music').filter(t=>matches(`${t.title} ${t.artist}`)).map(t=>{const url=safeUrl(t.uriString);return `<div class="workspace-track"><div class="workspace-row"><div class="workspace-detail"><strong>${esc(t.title||'Untitled track')}</strong><small>${esc(t.artist||'Unknown artist')} · ${Math.floor(number(t.durationMs)/60000)}:${String(Math.floor(number(t.durationMs)/1000)%60).padStart(2,'0')}</small></div>${button('edit-music','Edit',t.id)}</div>${url?`<audio controls preload="none" src="${esc(url)}" aria-label="Play ${esc(t.title)}"></audio>`:'<p class="workspace-note">This audio file is stored on your device. Edit the track to add a web audio URL for browser playback.</p>'}</div>`;}).join('')||empty(state.loaded.has('music')?'No tracks found.':'Loading music…'))+`<p class="workspace-note">Showing up to ${state.pageLimit} tracks.</p>${button('more','Load more tracks')}`;
+  }
+  const fields = {
+    task:[['title','Title','text',true],['description','Description','textarea'],['dueDateTime','Due date','datetime-local'],['priority','Priority',['NONE','LOW','MEDIUM','HIGH']],['categoryId','Category',()=>[['','Uncategorized'],...data('categories').map(c=>[c.id,c.name])]],['parentId','Parent task',()=>[['','No parent'],...data('tasks').map(t=>[t.id,t.title])]],['recurrenceRule','Recurrence rule','text'],['reminderOffsetMinutes','Reminder minutes before','number']],
+    scenario:[['name','Scenario name','text',true]],
+    entry:[['name','Name','text',true],['amount','Amount','number',true],['type','Type',['EXPENSE','INCOME']],['dateMillis','Date','date',true],['plannedDateMillis','Planned date','date'],['recurrence','Repeat',['NONE','WEEKLY','MONTHLY','YEARLY']],['recurrenceInterval','Repeat interval','number',true],['recurrenceEndDateMillis','Repeat until','date']],
+    food:[['foodName','Food','text',true],['date','Date','date',true],['mealType','Meal',['BREAKFAST','LUNCH','DINNER','SNACK']],['quantity','Quantity','number',true],['unit','Unit','text'],['calories','Calories','number',true],['protein','Protein (g)','number'],['carbs','Carbs (g)','number'],['fat','Fat (g)','number'],['fiber','Fiber (g)','number'],['sugar','Sugar (g)','number']],
+    water:[['date','Date','date',true],['amountMl','Water (ml)','number',true]],
+    weight:[['date','Date','date',true],['weightKg','Weight (kg)','number',true],['bodyFatPercentage','Body fat (%)','number'],['muscleMassKg','Muscle mass (kg)','number'],['waistCm','Waist (cm)','number']],
+    training:[['date','Date','date',true],['type','Training',['GYM','CYCLING','CARDIO','OTHER']],['durationMinutes','Minutes','number',true],['caloriesBurned','Calories burned','number'],['intensity','Intensity',['LOW','MEDIUM','HIGH']],['distanceKm','Distance (km)','number'],['avgHeartRate','Average heart rate','number'],['notes','Notes','textarea']],
+    music:[['title','Title','text',true],['artist','Artist','text'],['uriString','Audio URL or existing device URI','text',true],['durationMs','Duration (milliseconds)','number']],
+    profile:[['name','Name','text',true],['birthDate','Birth date','date'],['gender','Gender',['MALE','FEMALE','OTHER']],['heightCm','Height (cm)','number'],['weightKg','Weight (kg)','number'],['goalWeightKg','Goal weight (kg)','number'],['activityLevel','Activity',['SEDENTARY','LIGHTLY_ACTIVE','MODERATELY_ACTIVE','VERY_ACTIVE','EXTRA_ACTIVE']],['goalType','Goal',['LOSE','MAINTAIN','GAIN']],['weeklyGoalRate','Weekly goal (kg)','number'],['trainingCycle','Training cycle',['NONE','GYM','CYCLING','BOTH']],['gymFrequencyPerWeek','Gym days / week','number'],['cyclingFrequencyPerWeek','Cycling days / week','number']],
+    exercise:[['exerciseName','Exercise','text',true],['sets','Sets','number'],['reps','Reps','number'],['weightKg','Weight (kg)','number'],['restSeconds','Rest (seconds)','number']]
+  };
+  const collections={task:'tasks',scenario:'finance_scenarios',food:'food_entry',water:'water_entry',weight:'weight_entry',training:'training_session',music:'music_tracks',profile:'user_profile',exercise:'exercise_entry'};
+  function openEditor(kind,record={},context={}) {
+    const dialog=document.createElement('dialog');dialog.className='workspace-dialog';
+    const defaults={date:dayMillis(state.date),dateMillis:Date.now(),recurrenceInterval:1,...record};
+    dialog.innerHTML=`<form><h2>${record.id?'Edit':'Add'} ${esc(kind)}</h2><div class="workspace-form">${fields[kind].map(([key,label,type,required])=>{
+      let value=defaults[key]??'';if(type==='date')value=value?dateInput(value):'';if(type==='datetime-local')value=datetimeInput(value);
+      const options=typeof type==='function'?type():Array.isArray(type)?type:null;
+      const input=options?`<select name="${key}">${options.map(option=>{const [v,l]=Array.isArray(option)?option:[option,option];return `<option value="${esc(v)}" ${String(value)===String(v)?'selected':''}>${esc(l)}</option>`;}).join('')}</select>`:type==='textarea'?`<textarea name="${key}">${esc(value)}</textarea>`:`<input name="${key}" type="${type}" value="${esc(value)}" ${required?'required':''} ${type==='number'?'min="0" step="any"':''}>`;
+      return `<label>${esc(label)}${input}</label>`;
+    }).join('')}</div><p role="alert" class="form-error"></p><div class="workspace-filters"><button class="primary" type="submit">Save to Firebase</button><button class="tool" type="button" data-cancel>Cancel</button></div></form>`;
+    document.body.append(dialog);dialog.showModal();dialog.querySelector('[data-cancel]').onclick=()=>dialog.close();dialog.addEventListener('close',()=>dialog.remove());
+    dialog.querySelector('form').onsubmit=async event=>{
+      event.preventDefault();const submit=dialog.querySelector('[type=submit]');submit.disabled=true;const patch={};
+      try {
+        const form=new FormData(event.target);
+        for(const [key,,type,required]of fields[kind]) {const raw=String(form.get(key)??'').trim();if(required&&!raw)throw Error('Fill in the required fields.');patch[key]=type==='number'?(raw?Number(raw):(['fiber','sugar','bodyFatPercentage','muscleMassKg','waistCm','distanceKm','avgHeartRate','reminderOffsetMinutes'].includes(key)?null:0)):type==='date'?(raw?dayMillis(raw):null):type==='datetime-local'?(raw?new Date(raw).getTime():null):raw; if(typeof patch[key]==='number'&&!Number.isFinite(patch[key]))throw Error('Enter valid numbers and dates.');}
+        if(kind==='task') {patch.parentId=patch.parentId||null;patch.categoryId=patch.categoryId||null;patch.recurrenceRule=patch.recurrenceRule||null;let parent=patch.parentId;const seen=new Set(record.id?[record.id]:[]);while(parent){if(seen.has(parent))throw Error('A task cannot be its own ancestor.');seen.add(parent);parent=data('tasks').find(t=>t.id===parent)?.parentId;}}
+        if(kind==='entry'&&(!Number.isInteger(patch.recurrenceInterval)||patch.recurrenceInterval<1))throw Error('Repeat interval must be a positive whole number.');
+        if(kind==='music'&&patch.uriString!==record.uriString&&!safeUrl(patch.uriString))throw Error('Use an HTTPS audio URL for a new web track.');
+        await writeRecord(kind,record,patch,context);dialog.close();showToast('Saved to Firebase');
+      }catch(error){dialog.querySelector('.form-error').textContent=error.message;}finally{submit.disabled=false;}
+    };
+  }
+  async function writeRecord(kind,record,patch,context) {
+    if(kind==='entry') {
+      const ref=db.collection('finance_scenarios').doc(context.scenarioId);
+      await db.runTransaction(async tx=>{const snap=await tx.get(ref);if(!snap.exists)throw Error('This scenario no longer exists.');const current=snap.data(),list=entries(current);if(record.id!=null&&!list.some(e=>e.id===record.id))throw Error('This entry no longer exists.');const id=record.id??Math.max(number(current.nextEntryId)||1,...list.map(e=>number(e.id)+1));const next=record.id!=null?list.map(e=>e.id===id?{...e,...patch}:e):[...list,{...patch,id}];tx.update(ref,{entriesJson:JSON.stringify(next),nextEntryId:Math.max(number(current.nextEntryId)||1,id+1),updatedAt:Date.now()});});return;
+    }
+    if(kind==='profile' && patch.birthDate==null)patch.birthDate=0;
+    const ref=record.id?db.collection(collections[kind]).doc(record.id):db.collection(collections[kind]).doc();
+    if(record.id) {if(kind==='profile'||kind==='scenario')patch.updatedAt=Date.now();await ref.update(patch);return;}
+    const initial=kind==='task'?{createdAt:Date.now(),isCompleted:false,isFavorite:false}:kind==='scenario'?{entriesJson:'[]',nextEntryId:1,orderIndex:Math.max(-1,...data('finance').map(s=>number(s.orderIndex)))+1,createdAt:Date.now(),updatedAt:Date.now()}:kind==='music'?{addedAt:Date.now()}:kind==='food'?{source:'MANUAL',custom:true}:kind==='profile'?{createdAt:Date.now(),updatedAt:Date.now()}:kind==='exercise'?{sessionId:context.sessionId}:{};
+    await ref.set({...initial,...patch});
+  }
+  async function exerciseList(sessionId) {
+    const dialog=document.createElement('dialog');dialog.className='workspace-dialog';dialog.innerHTML='<h2>Exercises</h2><div data-list>Loading…</div><div class="workspace-filters"><button class="tool" data-add>Add exercise</button><button class="tool" data-close>Close</button></div>';document.body.append(dialog);dialog.showModal();
+    const unsubscribe=db.collection('exercise_entry').where('sessionId','==',sessionId).onSnapshot(snapshot=>{dialog.querySelector('[data-list]').innerHTML=snapshot.docs.map(d=>{const e=d.data();return `<p><strong>${esc(e.exerciseName)}</strong> · ${esc(e.sets)} × ${esc(e.reps)} · ${esc(amount(e.weightKg))} kg</p>`;}).join('')||empty('No exercises logged.');},error=>{dialog.querySelector('[data-list]').textContent=error.message;});
+    dialog.querySelector('[data-add]').onclick=()=>openEditor('exercise',{}, {sessionId});dialog.querySelector('[data-close]').onclick=()=>dialog.close();dialog.addEventListener('close',()=>{unsubscribe();dialog.remove();});
+  }
+  mount.addEventListener('change',event=>{if(event.target.id==='finance-scenario'){state.scenario=event.target.value;render();}if(event.target.id==='nutrition-date'){state.date=event.target.value;subscribe();}});
+  mount.addEventListener('click',async event=>{
+    const target=event.target.closest('[data-action]');if(!target)return;const action=target.dataset.action,id=target.dataset.id;
+    try {
+      if(action==='refresh')return subscribe();
+      if(action==='signin'){await firebase.auth().signInWithPopup(new firebase.auth.GoogleAuthProvider());return subscribe();}
+      if(action==='filter'){state.taskFilter=id;return render();}
+      if(action==='history'){state.history=!state.history;return subscribe();}
+      if(action==='more'){state.pageLimit+=200;return subscribe();}
+      if(action==='profile')return openEditor('profile',data('profile')[0]||{});
+      if(action==='exercises')return exerciseList(id);
+      if(action==='rename-scenario')return openEditor('scenario',scenario());
+      if(action==='complete'||action==='favorite'){const task=data('tasks').find(t=>t.id===id);if(!task)return;const key=action==='complete'?'isCompleted':'isFavorite';target.disabled=true;await db.collection('tasks').doc(id).update({[key]:!task[key]});return;}
+      if(action.startsWith('add-')||action.startsWith('edit-')) {
+        const kind=action.replace(/^(add|edit)-/,'');if(!fields[kind])return;
+        const selected=scenario();if(kind==='entry'&&!selected)return showToast('Create a scenario first.');
+        const lists={task:'tasks',scenario:'finance',music:'music',food:'food_entry',training:'training_session'};
+        const record=action.startsWith('edit-')?(kind==='entry'?entries(selected).find(e=>String(e.id)===id):data(lists[kind]).find(e=>e.id===id)):{};
+        if(!record)throw Error('This record is no longer available.');
+        return openEditor(kind,record,kind==='entry'?{scenarioId:selected.id}:{});
+      }
+    }catch(error){showToast(`Could not save: ${error.message}`);target.disabled=false;}
+  });
+  // One audio player at a time; live snapshots must not keep hidden audio playing.
+  mount.addEventListener('play',event=>{mount.querySelectorAll('audio').forEach(audio=>{if(audio!==event.target)audio.pause();});},true);
+  navigate('Tasks');
+})();
+
+  </script>
   <script src="sketches.js?v=table-fonts-fe93dcc"></script>
 </body>
 </html>
