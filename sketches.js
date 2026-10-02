@@ -286,7 +286,7 @@
       const fontSize = Math.max(10, Number(el.fontSize) || 16);
       const fontFamily = ['Arial', 'Lora', 'Caveat'].includes(el.fontFamily) ? el.fontFamily : 'Arial';
       ctx.fillStyle = ink; ctx.font = `${fontSize}px "${fontFamily}"`;
-      if (el.fontRuns?.length) { drawRichText(el.text || '', el.fontRuns, x + 6, y + 18, Math.max(20, w - 12), fontSize, fontFamily, fontSize + 4); return; }
+      if (el.fontRuns?.length || codeSpans(el.text).length) { drawRichText(el.text || '', el.fontRuns, x + 6, y + 18, Math.max(20, w - 12), fontSize, fontFamily, fontSize + 4); return; }
       const lines = [];
       for (const sourceLine of String(el.text || '').split('\n')) {
         let line = '';
@@ -755,6 +755,91 @@
     return Array.from({ length: rows }, (_, row) => Math.max(20, Number(item.rowHeights?.[row]) || Number(item.h) / rows || 25));
   }
 
+  // Formatting is derived from plain text; source and manual font runs stay intact.
+  const codeCache = new Map();
+  function codeSpans(value) {
+    const text = String(value || '');
+    if (codeCache.has(text)) return codeCache.get(text);
+    const spans = []; let offset = 0, fence = '', depth = 0;
+    const strong = line => /^(?:(?:export\s+)?(?:const|let|var|val|fun|function|class|interface|enum|data\s+class|def|async\s+def|import|package|namespace|using)\s+[\w{*]|(?:public|private|protected|static|override|suspend)\s+\w|(?:if|for|while|switch|catch)\s*\(|(?:if|for|while|elif|except)\s+.+:\s*$|(?:SELECT|INSERT INTO|UPDATE|DELETE FROM|CREATE TABLE|ALTER TABLE)\s|<\/?[\w-]+(?:\s[^>]*|\s*)>|["'][^"']+["']\s*:\s*\S|[\w.$]+\s*(?:=|:=|=>)\s*\S|[\w.$]+\([^\n]*\)\s*[;{]?\s*$|(?:return|throw|yield)\s+.+[;}]\s*$)/.test(line);
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim(), marker = trimmed.match(/^(`{3,}|~{3,})/);
+      let isCode = false;
+      if (marker) { isCode = true; fence = fence ? (marker[1][0] === fence[0] && marker[1].length >= fence.length ? '' : fence) : marker[1]; if (!fence) depth = 0; }
+      else isCode = Boolean(fence) || strong(trimmed) || (depth > 0) || /^(?:[{}\[\]]+[;,]?|\/\/.*|\/\*.*|\*\/)$/.test(trimmed);
+      if (isCode) {
+        spans.push({ start: offset, end: offset + line.length, kind: marker ? 'comment' : 'base' });
+        if (!marker) {
+          const tokens = /\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b\d+(?:\.\d+)?\b|\b[A-Za-z_$][\w$]*\b|[{}()[\];,.<>:=+*/!?&|%-]/g;
+          for (const match of line.matchAll(tokens)) {
+            const word = match[0];
+            const kind = /^(?:\/\/|#|\/\*)/.test(word) ? 'comment' : /^["'`]/.test(word) ? 'string' : /^\d/.test(word) ? 'number' : /^(?:const|let|var|val|fun|function|class|interface|enum|data|def|async|await|import|from|package|export|default|return|throw|throws|yield|if|else|elif|for|while|switch|case|break|continue|try|catch|except|finally|new|public|private|protected|static|final|override|suspend|when|in|is|as|void|int|float|double|boolean|String|true|false|null|undefined|None|True|False|SELECT|FROM|WHERE|JOIN|ON|AS|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|GROUP|ORDER|BY|AND|OR|NOT|LIMIT)$/.test(word) ? 'keyword' : /^[A-Za-z_$]/.test(word) && /^\s*\(/.test(line.slice(match.index + word.length)) ? 'function' : /^[^\w$]/.test(word) ? 'punctuation' : 'base';
+            spans.push({ start: offset + match.index, end: offset + match.index + word.length, kind });
+          }
+          // Braces inside comments and strings must not turn following prose into code.
+          const structural = line.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/.*|#.*|\/\*.*?\*\//g, '');
+          depth = Math.max(0, depth + (structural.match(/[({\[]/g)||[]).length - (structural.match(/[)}\]]/g)||[]).length);
+        }
+      } else {
+        for (const match of line.matchAll(/`[^`\n]+`/g)) spans.push({ start:offset+match.index,end:offset+match.index+match[0].length,kind:'string' });
+      }
+      offset += line.length + 1;
+    }
+    if (codeCache.size >= 100) codeCache.delete(codeCache.keys().next().value);
+    codeCache.set(text, spans); return spans;
+  }
+  const codePalette = () => document.documentElement.dataset.theme === 'dark'
+    ? {base:'#e2e8f0',keyword:'#c4b5fd',string:'#86efac',number:'#fdba74',comment:'#94a3b8',function:'#7dd3fc',punctuation:'#cbd5e1'}
+    : {base:'#243247',keyword:'#713bb5',string:'#237a3b',number:'#a54b00',comment:'#64748b',function:'#006b9e',punctuation:'#475569'};
+  const codeStyle = document.createElement('style');
+  codeStyle.textContent = `[data-auto-code]{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace!important;color:var(--syntax-base)}:root{--syntax-base:#243247;--syntax-keyword:#713bb5;--syntax-string:#237a3b;--syntax-number:#a54b00;--syntax-comment:#64748b;--syntax-function:#006b9e;--syntax-punctuation:#475569}[data-theme="dark"]{--syntax-base:#e2e8f0;--syntax-keyword:#c4b5fd;--syntax-string:#86efac;--syntax-number:#fdba74;--syntax-comment:#94a3b8;--syntax-function:#7dd3fc;--syntax-punctuation:#cbd5e1}[data-auto-code="keyword"]{color:var(--syntax-keyword)}[data-auto-code="string"]{color:var(--syntax-string)}[data-auto-code="number"]{color:var(--syntax-number)}[data-auto-code="comment"]{color:var(--syntax-comment)}[data-auto-code="function"]{color:var(--syntax-function)}[data-auto-code="punctuation"]{color:var(--syntax-punctuation)}`;
+  document.head.append(codeStyle);
+
+  function decorateCode(node) {
+    if (!node.isConnected) return;
+    const selection = window.getSelection(), active = selection?.rangeCount && node.contains(selection.anchorNode) && node.contains(selection.focusNode);
+    let anchorMarker, focusMarker;
+    if (active) {
+      const anchorRange = document.createRange(), focusRange = document.createRange();
+      anchorRange.setStart(selection.anchorNode, selection.anchorOffset); anchorRange.collapse(true);
+      focusRange.setStart(selection.focusNode, selection.focusOffset); focusRange.collapse(true);
+      anchorMarker = document.createComment('caret-anchor'); focusMarker = document.createComment('caret-focus');
+      focusRange.insertNode(focusMarker); anchorRange.insertNode(anchorMarker);
+    }
+    node.querySelectorAll('[data-auto-code]').forEach(span => span.replaceWith(...span.childNodes));
+    const nodes = [];
+    const rich = readRichEditor(node, (textNode, start, end) => nodes.push({node:textNode,start,end}));
+    const spans = codeSpans(rich.text);
+    for (const item of nodes) {
+      const hits = spans.filter(span=>span.start<item.end&&span.end>item.start);
+      if (!hits.length) continue;
+      const boundaries = [...new Set([item.start,item.end,...hits.flatMap(span=>[Math.max(item.start,span.start),Math.min(item.end,span.end)])])].sort((a,b)=>a-b);
+      const fragment = document.createDocumentFragment();
+      for(let i=0;i<boundaries.length-1;i++) {
+        const start=boundaries[i],end=boundaries[i+1],token=hits.findLast(span=>span.start<=start&&span.end>=end);
+        const text=item.node.textContent.slice(start-item.start,end-item.start);
+        if(token){const span=document.createElement('span');span.dataset.autoCode=token.kind;span.textContent=text;fragment.append(span);}else fragment.append(document.createTextNode(text));
+      }
+      item.node.replaceWith(fragment);
+    }
+    if(active){
+      const anchorRange = document.createRange(), focusRange = document.createRange();
+      anchorRange.setStartBefore(anchorMarker); anchorRange.collapse(true);
+      focusRange.setStartBefore(focusMarker); focusRange.collapse(true);
+      anchorMarker.remove(); focusMarker.remove();
+      selection.setBaseAndExtent(anchorRange.startContainer, anchorRange.startOffset, focusRange.startContainer, focusRange.startOffset);
+      rememberTextSelection();
+    }
+  }
+  function enableCodeFormatting(node, onLayout) {
+    let timer, composing=false;
+    const schedule=()=>{clearTimeout(timer);timer=setTimeout(()=>{if(!composing&&node.isConnected){decorateCode(node);onLayout?.();}},180);};
+    node.addEventListener('compositionstart',()=>{composing=true;clearTimeout(timer);});
+    node.addEventListener('compositionend',()=>{composing=false;schedule();});
+    node.addEventListener('input',schedule);
+    decorateCode(node);
+  }
+
   const textFonts = new Set(['Arial', 'Lora', 'Caveat']);
   let savedTextSelection = null;
 
@@ -771,27 +856,31 @@
     node.append(document.createTextNode(text.slice(offset)));
   }
 
-  function readRichEditor(node) {
+  function readRichEditor(node, visitText) {
     let text = ''; const fontRuns = [];
+    const meaningful = child => child.nodeType === Node.ELEMENT_NODE || (child.nodeType === Node.TEXT_NODE && child.length > 0);
+    const sibling = (current, direction) => { let next = current[direction]; while (next && !meaningful(next)) next = next[direction]; return next; };
     function walk(current, font = '') {
       if (current.nodeType === Node.TEXT_NODE) {
         const start = text.length; text += current.textContent;
+        visitText?.(current, start, text.length);
         if (font && text.length > start) fontRuns.push({ start, end: text.length, fontFamily: font });
         return;
       }
       if (current.nodeType !== Node.ELEMENT_NODE) return;
       if (current.tagName === 'BR') {
         const parent = current.parentElement;
-        if (parent.childNodes.length === 1) return;
-        if (!current.nextSibling && current.previousSibling?.nodeName === 'BR') return;
+        if ([...parent.childNodes].filter(meaningful).length === 1) return;
+        if (!sibling(current, 'nextSibling') && sibling(current, 'previousSibling')?.nodeName === 'BR') return;
         text += '\n'; return;
       }
       const candidate = (current.style.fontFamily || current.getAttribute('face') || '').replace(/["']/g, '').trim();
       const family = textFonts.has(candidate) ? candidate : font;
       const block = current !== node && /^(DIV|P|LI)$/.test(current.tagName);
-      if (block && current.previousSibling && current.previousSibling.nodeName !== 'BR') text += '\n';
+      const previous = sibling(current, 'previousSibling'), next = sibling(current, 'nextSibling');
+      if (block && previous && previous.nodeName !== 'BR') text += '\n';
       for (const child of current.childNodes) walk(child, family);
-      if (block && current.nextSibling && !/^(DIV|P|LI)$/.test(current.nextSibling.nodeName)) text += '\n';
+      if (block && next && !/^(DIV|P|LI)$/.test(next.nodeName)) text += '\n';
     }
     walk(node); return { text: text.replace(/\r/g, ''), fontRuns };
   }
@@ -809,14 +898,18 @@
 
   function drawRichText(text, runs, x, y, width, fontSize, family, lineHeight) {
     let cursor = 0, line = 0, offset = 0;
+    const syntax = codeSpans(text), palette = codePalette(), originalInk = ctx.fillStyle;
     for (const char of String(text)) {
       const run = runs?.find(run => offset >= run.start && offset < run.end);
-      ctx.font = `${fontSize}px "${textFonts.has(run?.fontFamily) ? run.fontFamily : family}"`;
+      const token = syntax.findLast(span => offset >= span.start && offset < span.end);
+      ctx.font = token ? `${fontSize}px ui-monospace, SFMono-Regular, Consolas, monospace` : `${fontSize}px "${textFonts.has(run?.fontFamily) ? run.fontFamily : family}"`;
+      ctx.fillStyle = token ? palette[token.kind] : originalInk;
       if (char === '\n') { cursor = 0; line++; offset++; continue; }
       const size = ctx.measureText(char).width;
       if (cursor && cursor + size > width) { cursor = 0; line++; }
       ctx.fillText(char, x + cursor, y + line * lineHeight); cursor += size; offset += char.length;
     }
+    ctx.fillStyle = originalInk;
   }
 
   function applySelectedFont(fontFamily) {
@@ -897,7 +990,9 @@
       node.append(cell);
     }
     node.addEventListener('focusout', (event) => { if (!node.contains(event.relatedTarget) && !usingFormatToolbar(event.relatedTarget)) { clearTimeout(tableSaveTimer); tableSaveTimer = setTimeout(() => closeTableEditor(state), 120); } });
-    area.append(node); area.classList.add('editing-table'); positionTableEditor(); node.querySelector('.table-editor-cell')?.focus();
+    area.append(node); area.classList.add('editing-table'); positionTableEditor();
+    node.querySelectorAll('.table-editor-cell').forEach(cell => enableCodeFormatting(cell, () => { resizeTableRows(state); renderCanvas(); }));
+    node.querySelector('.table-editor-cell')?.focus();
   }
 
   async function saveTableEditor(state) {
@@ -1056,6 +1151,7 @@
       if (textElementEditor === state && !usingFormatToolbar(event.relatedTarget)) closeTextElementEditor(state);
     });
     editor.addEventListener('paste', (event) => handleSketchEditorPaste(event, editor));
+    enableCodeFormatting(editor, () => { updateTextElementFlow(state); queueTextElementSave(state); });
     editor.focus({ preventScroll: true });
     if (Number.isFinite(options.clientX) && Number.isFinite(options.clientY)) caretAtPoint(editor, options.clientX, options.clientY);
     else caretAtEnd(editor);
@@ -1289,6 +1385,7 @@
         if (pageBodyEditor === state && !usingFormatToolbar(event.relatedTarget)) closePageBodyEditor(state);
       });
       editor.addEventListener('paste', (event) => handleSketchEditorPaste(event, editor));
+      enableCodeFormatting(editor, () => { updateLocalPageBody(state); queuePageBodySave(state); });
     }
 
     if (initialText) {
