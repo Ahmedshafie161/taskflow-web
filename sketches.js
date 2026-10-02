@@ -789,9 +789,9 @@
       const candidate = (current.style.fontFamily || current.getAttribute('face') || '').replace(/["']/g, '').trim();
       const family = textFonts.has(candidate) ? candidate : font;
       const block = current !== node && /^(DIV|P|LI)$/.test(current.tagName);
-      if (block && text && !text.endsWith('\n')) text += '\n';
+      if (block && current.previousSibling && current.previousSibling.nodeName !== 'BR') text += '\n';
       for (const child of current.childNodes) walk(child, family);
-      if (block && current.nextSibling && !text.endsWith('\n')) text += '\n';
+      if (block && current.nextSibling && !/^(DIV|P|LI)$/.test(current.nextSibling.nodeName)) text += '\n';
     }
     walk(node); return { text: text.replace(/\r/g, ''), fontRuns };
   }
