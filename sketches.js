@@ -967,7 +967,7 @@
   function startTableEditor(item) {
     closePageBodyEditor(); closeTextElementEditor(); closeTableEditor();
     const area = $('.sketch-drawing-area');
-    const rows = Math.max(1, Math.min(30, Number(item.rows) || 1)), cols = Math.max(1, Math.min(20, Number(item.cols) || 1));
+    const rows = Math.max(1, Number(item.rows) || 1), cols = Math.max(1, Number(item.cols) || 1);
     const node = document.createElement('div'); node.className = 'table-editor'; node.setAttribute('role', 'group'); node.setAttribute('aria-label', `Edit ${rows} by ${cols} table`);
     const state = { boardId: selectedBoard.id, item, node, shifted: new Map(), minRowHeights: Array.from({ length: rows }, (_, row) => Math.max(24, Number(item.rowMinHeights?.[row]) || (item.rowHeights ? 24 : Number(item.h) / rows) || 24)) }; tableEditor = state;
     for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
@@ -1601,6 +1601,13 @@
       try {
         const clipboardItems = await navigator.clipboard.read();
         for (const clipboardItem of clipboardItems) {
+          if (clipboardItem.types.includes('text/html')) {
+            const html = await (await clipboardItem.getType('text/html')).text();
+            if (/<table\b/i.test(html)) {
+              if (savedTextSelection?.node.isConnected) { savedTextSelection.node.focus({preventScroll:true}); const selection=window.getSelection(); selection.removeAllRanges(); selection.addRange(savedTextSelection.range); }
+              return pasteTableContent(html, savedTextSelection?.node);
+            }
+          }
           const mime = clipboardItem.types.find((type) => type.startsWith('image/'));
           if (mime) return pasteImage(await clipboardItem.getType(mime));
           if (clipboardItem.types.includes('text/html')) {
@@ -1635,8 +1642,116 @@
     } catch { return null; }
   }
 
+  function clipboardTableBlocks(html) {
+    if (!/<table\b/i.test(html || '')) return null;
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    doc.querySelectorAll('script,style,iframe,object,embed,template').forEach(node => node.remove());
+    if (!doc.querySelector('table')) return null;
+    const plain = node => {
+      if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+      if (node.nodeType !== Node.ELEMENT_NODE) return '';
+      if (node.tagName === 'BR') return '\n';
+      if (node.tagName === 'IMG') return node.getAttribute('alt') || '';
+      const text = [...node.childNodes].map(plain).join('');
+      return text + (/^(P|DIV|LI|H[1-6]|TR)$/.test(node.tagName) ? '\n' : '');
+    };
+    const blocks = []; let text = '';
+    const flush = () => { if (text.trim()) blocks.push({kind:'text',text:text.replace(/^\n+|\n+$/g,'')}); text = ''; };
+    function visit(node) {
+      if (node.nodeType === Node.TEXT_NODE) { text += node.textContent; return; }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (node.tagName === 'TABLE') {
+        flush(); const grid = [], occupied = [];
+        const rows = [...node.rows].filter(row => row.closest('table') === node);
+        rows.forEach((row, r) => {
+          grid[r] ||= []; occupied[r] ||= []; let c = 0;
+          for (const cell of row.cells) {
+            while (occupied[r][c]) c++;
+            const rs = Math.min(rows.length-r, cell.rowSpan || rows.length-r), cs = Math.max(1, cell.colSpan || 1);
+            if (c + cs > 100 || rows.length > 500) throw Error('This table is too large to paste at once. Copy a smaller group of rows.');
+            grid[r][c] = plain(cell).replace(/\n+$/,'');
+            for (let dr=0;dr<rs;dr++) for(let dc=0;dc<cs;dc++) { occupied[r+dr] ||= []; occupied[r+dr][c+dc] = true; grid[r+dr] ||= []; grid[r+dr][c+dc] ??= ''; }
+            c += cs;
+          }
+        });
+        if (grid.length) blocks.push({kind:'table',grid});
+        return;
+      }
+      if (node.tagName === 'BR') {text += '\n';return;}
+      const block = /^(P|DIV|LI|H[1-6])$/.test(node.tagName);
+      if (block && text && !text.endsWith('\n')) text += '\n';
+      [...node.childNodes].forEach(visit);
+      if (block && !text.endsWith('\n')) text += '\n';
+    }
+    [...doc.body.childNodes].forEach(visit); flush(); return blocks;
+  }
+
+  async function pasteTableContent(html, editor = null) {
+    let blocks;
+    try { blocks = clipboardTableBlocks(html); } catch(error) { notice(error.message); return; }
+    if (!blocks?.length || !selectedBoard) return;
+    const boardId = selectedBoard.id;
+    const state = pageBodyEditor?.node === editor ? pageBodyEditor : textElementEditor?.node === editor ? textElementEditor : null;
+    const selectionRange = window.getSelection();
+    let beforeText = '', afterText = '';
+    if (state) {
+      const range = selectionRange?.rangeCount && editor.contains(selectionRange.anchorNode) ? selectionRange.getRangeAt(0).cloneRange() : document.createRange();
+      if (!editor.contains(range.startContainer)) {range.selectNodeContents(editor);range.collapse(false);}
+      const before = range.cloneRange(), after = range.cloneRange();
+      before.selectNodeContents(editor);before.setEnd(range.startContainer,range.startOffset);
+      after.selectNodeContents(editor);after.setStart(range.endContainer,range.endOffset);
+      const read = fragment => {const node=document.createElement('div');node.append(fragment);return readRichEditor(node);};
+      beforeText = read(before.cloneContents());afterText = read(after.cloneContents());
+      if (beforeText.text) blocks.unshift({kind:'text',...beforeText});
+      if (afterText.text) blocks.push({kind:'text',...afterText});
+      if (state === pageBodyEditor) closePageBodyEditor(state); else closeTextElementEditor(state);
+      await state.savePromise;
+      if (lastSaveError) {notice('Save the current text successfully before pasting a table.');return;}
+    }
+    if (selectedBoard?.id !== boardId) return;
+    const original = state ? elements.find(item => item.id === state.item.id) || state.item : null;
+    const origin = original ? elementBounds(original) : lastCanvasPoint || pageCenter();
+    const width = Math.max(320, original?.w || 720), fontSize = Number(original?.fontSize) || 20;
+    let y = origin.y;
+    const added = blocks.map(block => {
+      let item;
+      if (block.kind === 'table') {
+        const rows=block.grid.length, cols=Math.max(1,...block.grid.map(row=>row.length));
+        const w=Math.max(width,cols*90), cellText={};
+        const rowHeights=block.grid.map((row,r)=>Math.max(28,...Array.from({length:cols},(_,c)=>{
+          const text=String(row[c]||'');cellText[`${r},${c}`]=text;
+          return 10+16*text.split('\n').reduce((n,line)=>n+Math.max(1,Math.ceil(line.length*7/Math.max(20,w/cols-12))),0);
+        })));
+        item={type:'com.impactyn.taskmanager.data.entities.SketchElement.Table',_kind:'table',x:origin.x,y,w,h:rowHeights.reduce((a,b)=>a+b,0),rows,cols,cellText,rowHeights,rowMinHeights:Array(rows).fill(28),colorArgb:original?.colorArgb ?? activeColor,strokeWidth:1};
+      } else {
+        const lines=block.text.split('\n').reduce((n,line)=>n+Math.max(1,Math.ceil(line.length*fontSize*.6/(width-12))),0);
+        item={type:'com.impactyn.taskmanager.data.entities.SketchElement.TextBox',_kind:'textbox',x:origin.x,y,w:width,h:Math.max(32,lines*(fontSize+4)+12),text:block.text,fontRuns:block.fontRuns||[],fontSize,fontFamily:original?.fontFamily||'Arial',colorArgb:original?.colorArgb ?? activeColor,borderWidth:0};
+      }
+      y += item.h+12; return item;
+    });
+    const snapshot=elements.map(cloneElement), delta=y-origin.y-(original?.h||0);
+    const shifted=elements.filter(item=>item.id!==original?.id).map(item=>{
+      const box=elementBounds(item);
+      return box.y>=origin.y+(original?.h||0)-2 && box.x<origin.x+width && box.x+box.w>origin.x ? moveElement(item,0,delta) : item;
+    });
+    try {
+      const content=boardsRef.doc(boardId).collection('content').doc('elements'), collection=boardsRef.doc(boardId).collection('elements');
+      await db.runTransaction(async transaction=>{
+        const snap=await transaction.get(content);
+        let nextId=Math.max(Number(snap.get('nextElementId'))||1,...snapshot.map(item=>Number(item.id)+1));
+        for(const [index,item] of added.entries()){item.id=index===0 && original?.id ? original.id : nextId++;const record={...item};delete record._kind;transaction.set(collection.doc(String(item.id)),{elementJson:JSON.stringify(record),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});}
+        for(const item of shifted){const old=snapshot.find(entry=>entry.id===item.id);if(JSON.stringify(old)===JSON.stringify(item))continue;const record={...item};delete record._kind;transaction.set(collection.doc(String(item.id)),{elementJson:JSON.stringify(record),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});}
+        transaction.set(content,{nextElementId:nextId,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
+      });
+      if(selectedBoard?.id===boardId){recordUndo(snapshot);elements=[...shifted,...added];renderCanvas();}
+      lastSaveError='';$('#save-state').textContent='Saved to shared Firebase';showToast('Pasted text and editable tables');
+    } catch(error){lastSaveError=error.message;notice(`Could not paste table: ${error.message}. Your original content is unchanged.`);}
+  }
+
   function handleSketchEditorPaste(event, editor) {
     const clipboard = event.clipboardData;
+    const html = clipboard?.getData('text/html') || '';
+    if (/<table\b/i.test(html)) { event.preventDefault(); event.stopPropagation(); void pasteTableContent(html, editor); return; }
     const imageItem = [...(clipboard?.items || [])].find((item) => item.type.toLowerCase().startsWith('image/'));
     const imageFile = imageItem?.getAsFile() || clipboard?.files?.[0];
     if (imageFile?.type?.startsWith('image/')) {
@@ -1913,6 +2028,9 @@
   });
   window.addEventListener('paste', (event) => {
     if (!document.body.classList.contains('sketch-active') || !selectedBoard) return;
+    if (event.defaultPrevented) return;
+    const tableHtml = event.clipboardData?.getData('text/html') || '';
+    if (/<table\b/i.test(tableHtml) && !event.target.closest?.('input,textarea,select,[contenteditable]')) { event.preventDefault(); void pasteTableContent(tableHtml); return; }
     const clipboardItems = [...(event.clipboardData?.items || [])];
     const imageItem = clipboardItems.find((item) => item.type.toLowerCase().startsWith('image/'));
     const imageFile = imageItem?.getAsFile() || event.clipboardData?.files?.[0];
