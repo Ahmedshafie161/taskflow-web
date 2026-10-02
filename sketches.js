@@ -303,8 +303,13 @@
       return;
     }
     if (kind === 'table') {
-      ctx.strokeRect(x, y, w, h); const rows = Math.max(1, Number(el.rows) || 1), cols = Math.max(1, Number(el.cols) || 1);
+      const rows = Math.max(1, Number(el.rows) || 1), cols = Math.max(1, Number(el.cols) || 1);
       const heights = tableRowHeights(el), offsets = heights.map((_, row) => heights.slice(0, row).reduce((sum, value) => sum + value, 0));
+      for(let row=0;row<rows;row++) for(let col=0;col<cols;col++) {
+        const background=tableCellBackground(el,row,col);
+        if(background){ctx.fillStyle=background;ctx.fillRect(x+col*w/cols,y+offsets[row],w/cols,heights[row]);}
+      }
+      ctx.strokeRect(x,y,w,h);
       for (let i = 1; i < rows; i++) { ctx.beginPath(); ctx.moveTo(x, y + offsets[i]); ctx.lineTo(x + w, y + offsets[i]); ctx.stroke(); }
       for (let i = 1; i < cols; i++) { ctx.beginPath(); ctx.moveTo(x + w * i / cols, y); ctx.lineTo(x + w * i / cols, y + h); ctx.stroke(); }
       ctx.fillStyle = ink; ctx.font = '12px sans-serif';
@@ -976,6 +981,8 @@
       cell.setAttribute('aria-label', `Row ${row + 1}, column ${col + 1}`);
       cell.style.whiteSpace = 'pre-wrap'; cell.style.overflowWrap = 'anywhere'; cell.style.cursor = 'text';
       richEditorContent(cell, String(item.cellText?.[`${row},${col}`] ?? item.cellText?.[`${row}-${col}`] ?? ''), item.cellFontRuns?.[`${row},${col}`]);
+      const background = tableCellBackground(item,row,col);
+      if(background) cell.style.backgroundColor = background;
       cell.spellcheck = false;
       cell.addEventListener('paste', event => { event.preventDefault(); document.execCommand('insertText', false, event.clipboardData?.getData('text/plain') || ''); });
       cell.addEventListener('input', () => {
@@ -1642,9 +1649,44 @@
     } catch { return null; }
   }
 
+  function safeTableColor(value) {
+    const probe = document.createElement('span').style;
+    probe.color = String(value || '');
+    const color = probe.color;
+    return color && !/^(?:inherit|initial|unset|revert|currentcolor|transparent)$/i.test(color) && !/var\(|url\(/i.test(color) ? color : '';
+  }
+  function tableCellBackground(item, row, col) {
+    return safeTableColor(item.cellBackgroundColors?.[`${row},${col}`] || item.rowBackgroundColors?.[row] || item.backgroundColor || '');
+  }
+  function pastedBackgroundReader(doc) {
+    const rules = [];
+    for (const style of doc.querySelectorAll('style')) {
+      try {
+        const sheet = new CSSStyleSheet(); sheet.replaceSync(style.textContent);
+        const collect = list => { for (const rule of list) { if (rule.selectorText && rule.style) rules.push(rule); else if (rule.cssRules) collect(rule.cssRules); } };
+        collect(sheet.cssRules);
+      } catch { /* Inline colors remain available if the copied stylesheet is invalid. */ }
+    }
+    return element => {
+      let winner = safeTableColor(element.getAttribute('bgcolor')), score = -1;
+      for (const rule of rules) for (const selector of rule.selectorText.split(',')) {
+        try {
+          if (!element.matches(selector)) continue;
+          const value = safeTableColor(rule.style.backgroundColor); if (!value) continue;
+          const weight = (rule.style.getPropertyPriority('background-color') === 'important' ? 1000000 : 0) + (selector.match(/#[\w-]+/g)||[]).length*10000 + (selector.match(/\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+/g)||[]).length*100 + (selector.match(/(?:^|[\s>+~])\w+/g)||[]).length;
+          if (weight >= score) {score=weight;winner=value;}
+        } catch { /* Ignore selectors unsupported by the browser. */ }
+      }
+      const inline = safeTableColor(element.style.backgroundColor);
+      if (inline && (element.style.getPropertyPriority('background-color') === 'important' || score < 1000000)) winner=inline;
+      return winner;
+    };
+  }
+
   function clipboardTableBlocks(html) {
     if (!/<table\b/i.test(html || '')) return null;
     const doc = new DOMParser().parseFromString(html, 'text/html');
+    const backgroundOf = pastedBackgroundReader(doc);
     doc.querySelectorAll('script,style,iframe,object,embed,template').forEach(node => node.remove());
     if (!doc.querySelector('table')) return null;
     const plain = node => {
@@ -1661,7 +1703,7 @@
       if (node.nodeType === Node.TEXT_NODE) { text += node.textContent; return; }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
       if (node.tagName === 'TABLE') {
-        flush(); const grid = [], occupied = [];
+        flush(); const grid = [], occupied = [], cellBackgroundColors = {};
         const rows = [...node.rows].filter(row => row.closest('table') === node);
         rows.forEach((row, r) => {
           grid[r] ||= []; occupied[r] ||= []; let c = 0;
@@ -1670,11 +1712,13 @@
             const rs = Math.min(rows.length-r, cell.rowSpan || rows.length-r), cs = Math.max(1, cell.colSpan || 1);
             if (c + cs > 100 || rows.length > 500) throw Error('This table is too large to paste at once. Copy a smaller group of rows.');
             grid[r][c] = plain(cell).replace(/\n+$/,'');
+            const background = backgroundOf(cell) || backgroundOf(row) || backgroundOf(row.parentElement) || backgroundOf(node);
+            if (background) for(let dr=0;dr<rs;dr++) for(let dc=0;dc<cs;dc++) cellBackgroundColors[`${r+dr},${c+dc}`] = background;
             for (let dr=0;dr<rs;dr++) for(let dc=0;dc<cs;dc++) { occupied[r+dr] ||= []; occupied[r+dr][c+dc] = true; grid[r+dr] ||= []; grid[r+dr][c+dc] ??= ''; }
             c += cs;
           }
         });
-        if (grid.length) blocks.push({kind:'table',grid});
+        if (grid.length) blocks.push({kind:'table',grid,cellBackgroundColors});
         return;
       }
       if (node.tagName === 'BR') {text += '\n';return;}
@@ -1722,7 +1766,7 @@
           const text=String(row[c]||'');cellText[`${r},${c}`]=text;
           return 10+16*text.split('\n').reduce((n,line)=>n+Math.max(1,Math.ceil(line.length*7/Math.max(20,w/cols-12))),0);
         })));
-        item={type:'com.impactyn.taskmanager.data.entities.SketchElement.Table',_kind:'table',x:origin.x,y,w,h:rowHeights.reduce((a,b)=>a+b,0),rows,cols,cellText,rowHeights,rowMinHeights:Array(rows).fill(28),colorArgb:original?.colorArgb ?? activeColor,strokeWidth:1};
+        item={type:'com.impactyn.taskmanager.data.entities.SketchElement.Table',_kind:'table',x:origin.x,y,w,h:rowHeights.reduce((a,b)=>a+b,0),rows,cols,cellText,cellBackgroundColors:block.cellBackgroundColors,rowHeights,rowMinHeights:Array(rows).fill(28),colorArgb:original?.colorArgb ?? activeColor,strokeWidth:1};
       } else {
         const lines=block.text.split('\n').reduce((n,line)=>n+Math.max(1,Math.ceil(line.length*fontSize*.6/(width-12))),0);
         item={type:'com.impactyn.taskmanager.data.entities.SketchElement.TextBox',_kind:'textbox',x:origin.x,y,w:width,h:Math.max(32,lines*(fontSize+4)+12),text:block.text,fontRuns:block.fontRuns||[],fontSize,fontFamily:original?.fontFamily||'Arial',colorArgb:original?.colorArgb ?? activeColor,borderWidth:0};
