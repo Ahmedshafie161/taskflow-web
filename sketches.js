@@ -303,13 +303,14 @@
     }
     if (kind === 'table') {
       ctx.strokeRect(x, y, w, h); const rows = Math.max(1, Number(el.rows) || 1), cols = Math.max(1, Number(el.cols) || 1);
-      for (let i = 1; i < rows; i++) { ctx.beginPath(); ctx.moveTo(x, y + h * i / rows); ctx.lineTo(x + w, y + h * i / rows); ctx.stroke(); }
+      const heights = tableRowHeights(el), offsets = heights.map((_, row) => heights.slice(0, row).reduce((sum, value) => sum + value, 0));
+      for (let i = 1; i < rows; i++) { ctx.beginPath(); ctx.moveTo(x, y + offsets[i]); ctx.lineTo(x + w, y + offsets[i]); ctx.stroke(); }
       for (let i = 1; i < cols; i++) { ctx.beginPath(); ctx.moveTo(x + w * i / cols, y); ctx.lineTo(x + w * i / cols, y + h); ctx.stroke(); }
       ctx.fillStyle = ink; ctx.font = '12px sans-serif';
       for (const [cell, text] of Object.entries(el.cellText || {})) {
         const [row, col] = cell.split(/[,:-]/).map(Number);
-        if (!Number.isFinite(row) || !Number.isFinite(col)) continue;
-        ctx.fillText(String(text), x + col * w / cols + 5, y + row * h / rows + 16, Math.max(10, w / cols - 10));
+        if (!Number.isInteger(row) || !Number.isInteger(col) || row < 0 || row >= rows || col < 0 || col >= cols) continue;
+        tableTextLines(text, w / cols - 10).forEach((line, index) => ctx.fillText(line, x + col * w / cols + 5, y + offsets[row] + 16 + index * 16));
       }
       return;
     }
@@ -477,6 +478,9 @@
       const draft = textElementEditor.layoutElements.find((el) => el.id === textElementEditor.item.id);
       if (draft) textElementEditor.item = draft;
     }
+    if (tableEditor?.boardId === selectedBoard?.id && tableEditor.dirty) {
+      for (const draft of [tableEditor.item, ...tableEditor.shifted.values()]) { const index = incoming.findIndex(el => el.id === draft.id); if (index >= 0) incoming[index] = draft; }
+    }
     if (tableEditor?.boardId === selectedBoard?.id && !tableEditor.dirty) { const current = incoming.find((element) => element.id === tableEditor.item.id); if (current) tableEditor.item = current; }
     elements = incoming.sort((a, b) => a.id - b.id);
     if (selectedBoard) selectedBoard.elementCount = elements.length;
@@ -502,6 +506,7 @@
   function selectBoard(board) {
     closePageBodyEditor();
     closeTextElementEditor();
+    closeTableEditor();
     if (boardListener) boardListener();
     if (contentListener) contentListener();
     selectedBoard = board;
@@ -743,6 +748,47 @@
     state.node.style.color = color(box.colorArgb);
   }
 
+  function tableRowHeights(item) {
+    const rows = Math.max(1, Number(item.rows) || 1);
+    return Array.from({ length: rows }, (_, row) => Math.max(20, Number(item.rowHeights?.[row]) || Number(item.h) / rows || 25));
+  }
+
+  function tableTextLines(text, width) {
+    ctx.save(); ctx.font = '12px sans-serif';
+    const lines = [];
+    for (const paragraph of String(text).split('\n')) {
+      let line = '';
+      for (const char of paragraph) {
+        if (line && ctx.measureText(line + char).width > Math.max(1, width)) { lines.push(line); line = ''; }
+        line += char;
+      }
+      lines.push(line);
+    }
+    ctx.restore(); return lines;
+  }
+
+  function resizeTableRows(state) {
+    const before = elementBounds(state.item), heights = tableRowHeights(state.item);
+    const scale = Math.max(.01, imageLayout.scale);
+    for (const cell of state.node.querySelectorAll('textarea')) {
+      const row = Number(cell.dataset.cell.split(',')[0]);
+      cell.style.height = '0px';
+      heights[row] = Math.max(heights[row], (cell.scrollHeight + 2) / scale);
+      cell.style.height = '100%'; cell.scrollTop = 0;
+    }
+    const height = heights.reduce((sum, value) => sum + value, 0), delta = height - before.h;
+    state.item = { ...state.item, rowHeights: heights, h: height };
+    elements = elements.map(entry => {
+      if (entry.id === state.item.id) return state.item;
+      const box = elementBounds(entry);
+      if (delta > 0 && box.y >= before.y + before.h - 2 && box.x < before.x + before.w && box.x + box.w > before.x) {
+        const moved = moveElement(entry, 0, delta); state.shifted.set(entry.id, moved); return moved;
+      }
+      return entry;
+    });
+    positionTableEditor();
+  }
+
   function positionTableEditor() {
     const state = tableEditor;
     if (!state?.node?.isConnected || state.boardId !== selectedBoard?.id) return;
@@ -753,7 +799,12 @@
     state.node.style.left = `${left}px`; state.node.style.top = `${top}px`;
     state.node.style.width = `${Math.max(30, w * imageLayout.scale)}px`; state.node.style.height = `${Math.max(25, h * imageLayout.scale)}px`;
     state.node.style.gridTemplateColumns = `repeat(${cols},minmax(0,1fr))`;
-    state.node.style.gridTemplateRows = `repeat(${rows},minmax(0,1fr))`;
+    state.node.style.gridTemplateRows = tableRowHeights(state.item).map(height => `${height * imageLayout.scale}px`).join(' ');
+    for (const cell of state.node.querySelectorAll('textarea')) {
+      cell.style.font = `${12 * imageLayout.scale}px sans-serif`;
+      cell.style.lineHeight = `${16 * imageLayout.scale}px`;
+      cell.style.padding = `${3 * imageLayout.scale}px ${5 * imageLayout.scale}px`;
+    }
   }
 
   function startTableEditor(item) {
@@ -761,13 +812,14 @@
     const area = $('.sketch-drawing-area');
     const rows = Math.max(1, Math.min(30, Number(item.rows) || 1)), cols = Math.max(1, Math.min(20, Number(item.cols) || 1));
     const node = document.createElement('div'); node.className = 'table-editor'; node.setAttribute('role', 'group'); node.setAttribute('aria-label', `Edit ${rows} by ${cols} table`);
-    const state = { boardId: selectedBoard.id, item, node }; tableEditor = state;
+    const state = { boardId: selectedBoard.id, item, node, shifted: new Map() }; tableEditor = state;
     for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
       const cell = document.createElement('textarea'); cell.className = 'table-editor-cell'; cell.dataset.cell = `${row},${col}`; cell.setAttribute('aria-label', `Row ${row + 1}, column ${col + 1}`); cell.value = String(item.cellText?.[`${row},${col}`] ?? item.cellText?.[`${row}-${col}`] ?? ''); cell.spellcheck = false;
       cell.addEventListener('input', () => {
         const cellText = { ...(state.item.cellText || {}), [cell.dataset.cell]: cell.value };
+        delete cellText[cell.dataset.cell.replace(',', '-')];
         state.item = { ...state.item, cellText }; state.dirty = true; elements = elements.map((entry) => entry.id === state.item.id ? state.item : entry);
-        clearTimeout(tableSaveTimer); tableSaveTimer = setTimeout(() => saveTableEditor(state), 500); renderCanvas();
+        resizeTableRows(state); clearTimeout(tableSaveTimer); tableSaveTimer = setTimeout(() => saveTableEditor(state), 500); renderCanvas();
       });
       cell.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); closeTableEditor(); } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); closeTableEditor(); } });
       node.append(cell);
@@ -777,12 +829,21 @@
   }
 
   async function saveTableEditor(state) {
-    if (tableEditor !== state || state.boardId !== selectedBoard?.id) return;
-    try {
-      const record = { ...state.item }; delete record._kind;
-      await boardsRef.doc(state.boardId).collection('elements').doc(String(record.id)).set({ elementJson: JSON.stringify(record), updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    if (state.boardId !== selectedBoard?.id) return;
+    const snapshot = [state.item, ...state.shifted.values()].map(cloneElement);
+    state.savePromise = (state.savePromise || Promise.resolve()).catch(() => {}).then(async () => {
+      const collection = boardsRef.doc(state.boardId).collection('elements');
+      for (let offset = 0; offset < snapshot.length; offset += 400) {
+        const batch = db.batch();
+        snapshot.slice(offset, offset + 400).forEach(item => {
+          const record = { ...item }; delete record._kind;
+          batch.set(collection.doc(String(record.id)), { elementJson: JSON.stringify(record), updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+        });
+        await batch.commit();
+      }
       $('#save-state').textContent = 'Saved to shared Firebase';
-    } catch (error) { notice(`Could not save table cell: ${error.message}`); }
+    }).catch(error => notice(`Could not save table cell: ${error.message}`));
+    return state.savePromise;
   }
 
   function closeTableEditor(state = tableEditor) {
