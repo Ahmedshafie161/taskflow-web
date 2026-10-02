@@ -333,7 +333,12 @@
     }
   }
 
+  let canvasFrame = 0;
+  function requestCanvasRender() {
+    if (!canvasFrame) canvasFrame = requestAnimationFrame(() => { canvasFrame = 0; renderCanvas(); });
+  }
   function renderCanvas() {
+    if (canvasFrame) { cancelAnimationFrame(canvasFrame); canvasFrame = 0; }
     const area = $('.sketch-drawing-area');
     if (!selectedBoard) { $('#empty-sketch').hidden = false; return; }
     $('.sketch-drawing-area').dataset.pattern = String(selectedBoard.backgroundPattern || 'BLANK').toUpperCase();
@@ -802,6 +807,7 @@
 
   function decorateCode(node) {
     if (!node.isConnected) return;
+    if (!node.querySelector('[data-auto-code]') && !codeSpans(readRichEditor(node).text).length) return;
     const selection = window.getSelection(), active = selection?.rangeCount && node.contains(selection.anchorNode) && node.contains(selection.focusNode);
     let anchorMarker, focusMarker;
     if (active) {
@@ -1489,7 +1495,7 @@
     else if (lassoStart) { lassoRect={x:Math.min(lassoStart.x,p.x),y:Math.min(lassoStart.y,p.y),w:Math.abs(p.x-lassoStart.x),h:Math.abs(p.y-lassoStart.y)}; }
     else if (shapePreview&&shapeStart) { shapePreview.w=p.x-shapeStart.x; shapePreview.h=p.y-shapeStart.y; }
     else if (moveStart&&selection.size) { const dx=p.x-moveStart.x,dy=p.y-moveStart.y; elements=elements.map(el=>selection.has(el.id)?moveElement(el,dx,dy):el); moveStart=p; }
-    renderCanvas();
+    requestCanvasRender();
   });
   async function endStroke() {
     if (!drawing) return;
@@ -1510,7 +1516,7 @@
       } else renderCanvas();
       return;
     }
-    if (moveStart) { const before=moveSnapshot||[];moveStart=null;moveSnapshot=null; saveElements(elements,before); return; }
+    if (moveStart) { const before=moveSnapshot||[];moveStart=null;moveSnapshot=null; void saveElements(elements,before).catch(()=>{}); return; }
     if (!currentStroke) return;
     let stroke = currentStroke; currentStroke = null;
     if (stroke.points.length < 2) { renderCanvas(); return; }
@@ -1968,8 +1974,20 @@
     return {...el,x:(Number(el.x)||0)+dx,y:(Number(el.y)||0)+dy};
   }
   async function saveElements(updated,before=elements) {
-    try {recordUndo(before);const col=boardsRef.doc(selectedBoard.id).collection('elements');const old=await col.get();for(let i=0;i<old.docs.length;i+=400){const batch=db.batch();old.docs.slice(i,i+400).forEach(doc=>batch.delete(doc.ref));await batch.commit();}for(let i=0;i<updated.length;i+=400){const batch=db.batch();updated.slice(i,i+400).forEach(el=>{const item={...el};delete item._kind;batch.set(col.doc(String(item.id)),{elementJson:JSON.stringify(item),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});});await batch.commit();}$('#save-state').textContent='Saved to shared Firebase';}
-    catch(error){notice(`Could not save moved elements: ${error.message}`);}
+    if (!selectedBoard) return;
+    const boardId=selectedBoard.id, collection=boardsRef.doc(boardId).collection('elements');
+    const record = element => {const item={...element};delete item._kind;return JSON.stringify(item);};
+    const previous=new Map(before.map(item=>[String(item.id),record(item)]));
+    const next=new Map(updated.map(item=>[String(item.id),record(item)]));
+    const changes=[...next].filter(([id,value])=>previous.get(id)!==value);
+    const removed=[...previous.keys()].filter(id=>!next.has(id));
+    if(!changes.length&&!removed.length)return;
+    recordUndo(before);$('#save-state').textContent='Saving…';
+    try {
+      const operations=[...changes.map(([id,value])=>({id,value})),...removed.map(id=>({id}))];
+      for(let i=0;i<operations.length;i+=400){const batch=db.batch();for(const op of operations.slice(i,i+400)){const ref=collection.doc(op.id);if(op.value===undefined)batch.delete(ref);else batch.set(ref,{elementJson:op.value,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});}await batch.commit();}
+      lastSaveError='';$('#save-state').textContent='Saved to shared Firebase';
+    } catch(error){lastSaveError=error.message;$('#save-state').textContent='Save failed';notice(`Could not save changed elements: ${error.message}`);throw error;}
   }
   document.querySelectorAll('[data-tool]').forEach(button=>button.addEventListener('click',()=>{activeTool=button.dataset.tool;erase=activeTool==='ERASER';document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('active',b===button));canvas.style.cursor=activeTool==='SELECT'?'move':activeTool==='LASSO'?'crosshair':'crosshair';if(activeTool==='TEXT'&&selectedBoard)startPageBodyEditor(pageCenter());}));
   const ribbonGroups = { draw: ['draw', 'shapes'], insert: ['insert'], format: ['format'], page: ['page'], edit: ['edit'], view: ['view'] };
@@ -1983,7 +2001,8 @@
     });
     document.querySelectorAll('[data-ribbon-group]').forEach((group) => { group.hidden = !ribbonGroups[tab].includes(group.dataset.ribbonGroup); });
   }));
-  $('#board-filter').addEventListener('input', buildTree);
+  let pageSearchTimer;
+  $('#board-filter').addEventListener('input', () => { clearTimeout(pageSearchTimer); pageSearchTimer=setTimeout(buildTree,120); });
   $('#toggle-board-panel').addEventListener('click', () => {
     const layout = $('.sketch-layout'); layout.classList.toggle('boards-hidden');
     const open = !layout.classList.contains('boards-hidden');
@@ -2089,9 +2108,35 @@
     else if (text.trim()) { event.preventDefault(); pasteText(text); }
     else if (event.clipboardData?.items?.length) showToast('Paste text here; use Media link for an image or video URL');
   });
+  // Keep frequent actions reachable without opening another ribbon tab.
+  const quickBar = document.createElement('div'); quickBar.className='sketch-quickbar';quickBar.setAttribute('role','toolbar');quickBar.setAttribute('aria-label','Writing and navigation');
+  const quickActions=[['Type','[data-tool="TEXT"]','Click the page to type'],['Pen','[data-tool="PEN"]','Draw with a pen'],['Undo','#board-undo','Undo (Ctrl/Cmd+Z)'],['Redo','#board-redo','Redo (Ctrl/Cmd+Shift+Z)']];
+  for(const [label,target,title] of quickActions){const button=document.createElement('button');button.type='button';button.className='tool';button.textContent=label;button.title=title;button.addEventListener('pointerdown',event=>event.preventDefault());button.addEventListener('click',()=>$(target).click());quickBar.append(button);}
+  const toolsToggle=document.createElement('button');toolsToggle.type='button';toolsToggle.className='tool';toolsToggle.textContent='Hide tools';toolsToggle.setAttribute('aria-expanded','true');
+  const ribbon=$('.sketch-ribbon-shell');ribbon.id='sketch-ribbon-controls';toolsToggle.setAttribute('aria-controls',ribbon.id);
+  toolsToggle.addEventListener('click',()=>{ribbon.hidden=!ribbon.hidden;toolsToggle.textContent=ribbon.hidden?'Show tools':'Hide tools';toolsToggle.setAttribute('aria-expanded',String(!ribbon.hidden));requestCanvasRender();});quickBar.append(toolsToggle);
+  const saveStatus=$('#save-state');saveStatus.setAttribute('role','status');saveStatus.setAttribute('aria-live','polite');quickBar.append(saveStatus);
+  $('.editor-heading').after(quickBar);
+  const uxStyle=document.createElement('style');uxStyle.textContent=`
+    .sketch-toolbar p{display:none}.sketch-toolbar{min-height:40px}.sketch-toolbar h1{font-size:16px}
+    .sketch-quickbar{display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid var(--line);background:var(--surface);flex-shrink:0;overflow-x:auto}
+    .sketch-quickbar .tool{min-height:34px;padding:0 12px;white-space:nowrap}.sketch-quickbar #save-state{margin-left:auto;max-width:210px;overflow:hidden;text-overflow:ellipsis}
+    .board-panel .panel-heading{position:sticky;top:-13px;background:var(--surface);z-index:1;padding:10px 0;margin-top:-10px}.board-entry{min-height:38px}.board-entry.active{box-shadow:inset 3px 0 var(--accent)}
+    .board-search{height:39px;font-size:12px}.sketch-ribbon-tabs{height:34px}.sketch-ribbon-tabs button{font-size:11px}.sketch-ribbon .tool{min-height:34px}
+    .sketch-quickbar button:focus-visible,.sketch-ribbon button:focus-visible,.board-entry:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    .sketch-ribbon-shell[hidden]{display:none!important}.editor-heading small{max-width:170px;overflow:hidden;text-overflow:ellipsis}.sketch-drawing-area{scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+    @media(max-width:780px){.sketch-quickbar{padding:5px 8px;gap:4px}.sketch-quickbar .tool{padding:0 9px;min-height:36px}.sketch-quickbar #save-state{font-size:9px!important;max-width:115px}.editor-heading .board-actions{display:none}.sketch-toolbar h1{font-size:14px}}
+    #sketch-view:fullscreen .sketch-quickbar{padding:3px 7px}#sketch-view:fullscreen .sketch-quickbar .tool{min-height:30px}
+  `;document.head.append(uxStyle);
+  document.addEventListener('keydown',event=>{
+    if(!document.body.classList.contains('sketch-active'))return;
+    if((event.ctrlKey||event.metaKey)&&event.shiftKey&&event.key.toLowerCase()==='f'){
+      event.preventDefault();$('.sketch-layout').classList.remove('boards-hidden');$('#toggle-board-panel').setAttribute('aria-label','Hide notebook pages');$('#board-filter').focus();$('#board-filter').select();requestCanvasRender();
+    }
+  });
   $('#save-sketch').addEventListener('click', () => showToast(lastSaveError ? `Save failed: ${lastSaveError}` : 'Sketches save as you draw'));
-  new ResizeObserver(renderCanvas).observe($('.sketch-drawing-area'));
+  new ResizeObserver(requestCanvasRender).observe($('.sketch-drawing-area'));
   new MutationObserver(renderCanvas).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   window.addEventListener('taskflow:sketches-open', () => { renderCanvas(); if (selectedBoard) selectBoard(selectedBoard); });
-  window.addEventListener('resize', renderCanvas);
+  window.addEventListener('resize', requestCanvasRender);
 })();
