@@ -349,7 +349,7 @@
     ctx.imageSmoothingQuality = 'high';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
-    const x = Math.max(30, (rect.width - worldW * scale) / 2), y = Math.max(30, (rect.height - worldH * scale) / 2);
+    const x = Math.max(30, (rect.width - worldW * scale) / 2), y = 30;
     imageLayout = { scale, x, y, bounds: b };
     const zoomLabel = $('#zoom-label'); if (zoomLabel) zoomLabel.textContent = `${Math.round(zoomFactor * 100)}%`;
     positionPageBodyEditor();
