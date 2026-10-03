@@ -348,7 +348,7 @@
     if (!selectedBoard) { $('#empty-sketch').hidden = false; return; }
     $('.sketch-drawing-area').dataset.pattern = String(selectedBoard.backgroundPattern || 'BLANK').toUpperCase();
     $('#empty-sketch').hidden = elements.length > 0 || drawing;
-    const b = boundsFor(elements);
+    const b = boundsFor([...elements,...[...pendingImagePreviews].filter(preview=>preview.boardId===selectedBoard.id).map(preview=>preview.item)]);
     const worldW = Math.max(1, b.maxX - b.minX), worldH = Math.max(1, b.maxY - b.minY);
     const scale = zoomFactor;
     let dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -1619,11 +1619,24 @@
     if (!selectedBoard || !text.trim()) return;
     startPageBodyEditor(pageCenter(), text.trim(), { append: true });
   }
+  function pasteClipboardImage(blob) {
+    const saved=savedTextSelection;
+    if(saved?.node.isConnected){
+      saved.node.focus({preventScroll:true});
+      const selection=window.getSelection();selection.removeAllRanges();selection.addRange(saved.range.cloneRange());
+      return pasteImageAtTextCursor(blob,saved.node);
+    }
+    return pasteImage(blob,pageCenter());
+  }
   async function pasteButtonAction() {
     if (!selectedBoard) return showToast('Choose a page before pasting');
     if (navigator.clipboard?.read) {
       try {
         const clipboardItems = await navigator.clipboard.read();
+        for (const clipboardItem of clipboardItems) {
+          const imageType=clipboardItem.types.find(type=>type.startsWith('image/'));
+          if(imageType) return pasteClipboardImage(await clipboardItem.getType(imageType));
+        }
         for (const clipboardItem of clipboardItems) {
           if (clipboardItem.types.includes('text/html')) {
             const html = await (await clipboardItem.getType('text/html')).text();
@@ -1633,11 +1646,11 @@
             }
           }
           const mime = clipboardItem.types.find((type) => type.startsWith('image/'));
-          if (mime) return pasteImage(await clipboardItem.getType(mime));
+          if (mime) return pasteClipboardImage(await clipboardItem.getType(mime));
           if (clipboardItem.types.includes('text/html')) {
             const html = await (await clipboardItem.getType('text/html')).text();
             const image = imageBlobFromHtml(html);
-            if (image) return pasteImage(image);
+            if (image) return pasteClipboardImage(image);
           }
         }
       } catch (error) { console.info('Clipboard image read needs keyboard paste fallback:', error); }
@@ -1645,7 +1658,7 @@
     try {
       const text = await navigator.clipboard?.readText();
       const image = imageBlobFromHtml(text || '');
-      if (image) return pasteImage(image);
+      if (image) return pasteClipboardImage(image);
       if (text && clipboardElements.length && text === clipboardPlain) return pasteElements();
       if (text?.trim()) return pasteText(text);
     } catch (error) { console.info('Clipboard text read unavailable:', error); }
@@ -1812,7 +1825,6 @@
   function handleSketchEditorPaste(event, editor) {
     const clipboard = event.clipboardData;
     const html = clipboard?.getData('text/html') || '';
-    if (/<table\b/i.test(html)) { event.preventDefault(); event.stopPropagation(); void pasteTableContent(html, editor); return; }
     const imageItem = [...(clipboard?.items || [])].find((item) => item.type.toLowerCase().startsWith('image/'));
     const imageFile = imageItem?.getAsFile() || clipboard?.files?.[0];
     if (imageFile?.type?.startsWith('image/')) {
@@ -1821,6 +1833,7 @@
       void pasteImageAtTextCursor(imageFile, editor);
       return;
     }
+    if (/<table\b/i.test(html)) { event.preventDefault(); event.stopPropagation(); void pasteTableContent(html, editor); return; }
     const htmlImage = imageBlobFromHtml(clipboard?.getData('text/html') || '');
     if (htmlImage) {
       event.preventDefault();
@@ -1861,7 +1874,9 @@
     } catch { /* Keep a readable inline-sized placeholder for uncommon image formats. */ }
     if (!editor.isConnected || (pageBodyEditor !== state && textElementEditor !== state)) return pasteImage(blob);
 
-    const worldPoint = rangeWorldPoint(range);
+    renderCanvas();
+    const caretRect=range.getBoundingClientRect();
+    const worldPoint = caretRect.width || caretRect.height ? rangeWorldPoint(range) : {x:state.item.x+6,y:state.item.y};
     const lineHeight = Math.max(12, Number(state.item.fontSize) || 20) + 4;
     const reservedLines = Math.max(1, Math.ceil(height / lineHeight));
     editor.focus({ preventScroll: true });
@@ -1904,12 +1919,12 @@
     image.dataset.objectUrl = objectUrl;
     const w = dimensions?.w || image.naturalWidth;
     const h = dimensions?.h || w * image.naturalHeight / image.naturalWidth;
-    const p = placement || lastCanvasPoint || pageCenter();
+    const p = placement || pageCenter();
     const item = { type: 'com.impactyn.taskmanager.data.entities.SketchElement.Image', _kind: 'image', uriString: `firestore-media://${key}`, mediaName, mimeType: blob.type, x: p.x, y: p.y, w, h };
     const node = document.createElement('div'); node.className = 'pasted-image-preview';
     const caption = document.createElement('button'); caption.type = 'button'; caption.textContent = 'Saving image…'; caption.disabled = true;
     node.append(image, caption); $('.sketch-drawing-area').append(node);
-    const preview = { node, item, boardId }; pendingImagePreviews.add(preview); positionPendingImagePreviews();
+    const preview = { node, item, boardId }; pendingImagePreviews.add(preview); renderCanvas(); positionPendingImagePreviews();
     recordUndo();
     let mediaSaved = false, saving = false, uploadErrorMessage = '';
     const upload = async () => {
@@ -2030,6 +2045,7 @@
     $('#toggle-board-tree').setAttribute('aria-label', allPagesCollapsed ? 'Expand all pages' : 'Collapse all pages'); buildTree();
   });
   $('#board-copy').addEventListener('click', copySelection);
+  $('#board-paste').addEventListener('pointerdown',event=>{rememberTextSelection();event.preventDefault();});
   $('#board-paste').addEventListener('click', pasteButtonAction);
   $('#board-delete-selection').addEventListener('click', deleteSelection);
   $('#board-image-table').addEventListener('click', imageToEditableTable);
@@ -2104,16 +2120,16 @@
     if (!document.body.classList.contains('sketch-active') || !selectedBoard) return;
     if (event.defaultPrevented) return;
     const tableHtml = event.clipboardData?.getData('text/html') || '';
-    if (/<table\b/i.test(tableHtml) && !event.target.closest?.('input,textarea,select,[contenteditable]')) { event.preventDefault(); void pasteTableContent(tableHtml); return; }
     const clipboardItems = [...(event.clipboardData?.items || [])];
     const imageItem = clipboardItems.find((item) => item.type.toLowerCase().startsWith('image/'));
     const imageFile = imageItem?.getAsFile() || event.clipboardData?.files?.[0];
     const targetEditor = event.target.closest?.('.page-body-editor');
-    if (imageFile?.type?.startsWith('image/')) { event.preventDefault(); void (targetEditor ? pasteImageAtTextCursor(imageFile, targetEditor) : pasteImage(imageFile, lastCanvasPoint || pageCenter())); return; }
+    if (imageFile?.type?.startsWith('image/')) { event.preventDefault(); void (targetEditor ? pasteImageAtTextCursor(imageFile, targetEditor) : pasteImage(imageFile, pageCenter())); return; }
+    if (/<table\b/i.test(tableHtml) && !event.target.closest?.('input,textarea,select,[contenteditable]')) { event.preventDefault(); void pasteTableContent(tableHtml); return; }
     const html = event.clipboardData?.getData('text/html') || '';
     const htmlImage = imageBlobFromHtml(html);
-    if (htmlImage) { event.preventDefault(); void (targetEditor ? pasteImageAtTextCursor(htmlImage, targetEditor) : pasteImage(htmlImage, lastCanvasPoint || pageCenter())); return; }
-    if (event.target.matches?.('input,textarea,select,[contenteditable]')) return;
+    if (htmlImage) { event.preventDefault(); void (targetEditor ? pasteImageAtTextCursor(htmlImage, targetEditor) : pasteImage(htmlImage, pageCenter())); return; }
+    if (event.target.closest?.('input,textarea,select,[contenteditable]')) return;
     const text = event.clipboardData?.getData('text/plain') || '';
     if (text && clipboardElements.length && text === clipboardPlain) { event.preventDefault(); pasteElements(); }
     else if (text.trim()) { event.preventDefault(); pasteText(text); }
