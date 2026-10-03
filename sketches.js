@@ -333,11 +333,16 @@
     }
   }
 
+  const pageExtent = document.createElement('div');
+  pageExtent.setAttribute('aria-hidden','true');pageExtent.style.pointerEvents='none';
+  canvas.before(pageExtent);canvas.style.position='absolute';
+  $('.sketch-drawing-area').addEventListener('scroll',()=>requestCanvasRender(),{passive:true});
   let canvasFrame = 0;
   function requestCanvasRender() {
     if (!canvasFrame) canvasFrame = requestAnimationFrame(() => { canvasFrame = 0; renderCanvas(); });
   }
-  function renderCanvas() {
+  function renderCanvas(exportFullPage = false) {
+    const exporting = exportFullPage === true;
     if (canvasFrame) { cancelAnimationFrame(canvasFrame); canvasFrame = 0; }
     const area = $('.sketch-drawing-area');
     if (!selectedBoard) { $('#empty-sketch').hidden = false; return; }
@@ -346,11 +351,17 @@
     const b = boundsFor(elements);
     const worldW = Math.max(1, b.maxX - b.minX), worldH = Math.max(1, b.maxY - b.minY);
     const scale = zoomFactor;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const rectWidth = Math.max(area.clientWidth, Math.min(10000, Math.ceil(worldW * scale + 60)));
-    const rectHeight = Math.max(area.clientHeight, Math.min(10000, Math.ceil(worldH * scale + 60)));
-    if (canvas.style.width !== `${rectWidth}px`) canvas.style.width = `${rectWidth}px`;
-    if (canvas.style.height !== `${rectHeight}px`) canvas.style.height = `${rectHeight}px`;
+    let dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rectWidth = Math.max(area.clientWidth, Math.ceil(worldW * scale + 60));
+    const rectHeight = Math.max(area.clientHeight, Math.ceil(worldH * scale + 60));
+    pageExtent.style.width=`${rectWidth}px`;pageExtent.style.height=`${rectHeight}px`;
+    const scrollX=exporting?0:area.scrollLeft, scrollY=exporting?0:area.scrollTop;
+    const visibleWidth=exporting?rectWidth:area.clientWidth, visibleHeight=exporting?rectHeight:area.clientHeight;
+    canvas.style.left=`${scrollX}px`;canvas.style.top=`${scrollY}px`;
+    if (canvas.style.width !== `${visibleWidth}px`) canvas.style.width = `${visibleWidth}px`;
+    if (canvas.style.height !== `${visibleHeight}px`) canvas.style.height = `${visibleHeight}px`;
+    if(exporting) dpr=Math.min(dpr,Math.sqrt(16000000/(rectWidth*rectHeight)),16000/rectWidth,16000/rectHeight);
+    canvas.style.backgroundPosition=`${-scrollX}px ${-scrollY}px`;
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
     if (canvas.width !== Math.round(rect.width * dpr) || canvas.height !== Math.round(rect.height * dpr)) {
@@ -360,7 +371,7 @@
     ctx.imageSmoothingQuality = 'high';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
-    const x = Math.max(30, (rect.width - worldW * scale) / 2), y = 30;
+    const x = Math.max(30, (rectWidth - worldW * scale) / 2)-scrollX, y = 30-scrollY;
     imageLayout = { scale, x, y, bounds: b };
     const zoomLabel = $('#zoom-label'); if (zoomLabel) zoomLabel.textContent = `${Math.round(zoomFactor * 100)}%`;
     positionPageBodyEditor();
@@ -2034,8 +2045,8 @@
     } else zoomFactor = Math.max(0.1, Math.min(4, Number(nextZoom) || 1));
     renderCanvas();
     if (fit) { area.scrollTo({ left: 0, top: 0 }); return; }
-    const x = imageLayout.x + (oldCenter.x - imageLayout.bounds.minX) * imageLayout.scale;
-    const y = imageLayout.y + (oldCenter.y - imageLayout.bounds.minY) * imageLayout.scale;
+    const x = canvas.offsetLeft + imageLayout.x + (oldCenter.x - imageLayout.bounds.minX) * imageLayout.scale;
+    const y = canvas.offsetTop + imageLayout.y + (oldCenter.y - imageLayout.bounds.minY) * imageLayout.scale;
     area.scrollTo({ left: Math.max(0, x - area.clientWidth / 2), top: Math.max(0, y - area.clientHeight / 2) });
   }
   $('#zoom-in').addEventListener('click', () => updateZoom(zoomFactor + 0.1));
@@ -2063,7 +2074,7 @@
   $('#board-color').addEventListener('change', () => formatSelectedText({ colorArgb: activeColor }));
   $('#board-background').addEventListener('change',async e=>{if(!selectedBoard)return;selectedBoard.backgroundPattern=e.target.value;$('.sketch-drawing-area').dataset.pattern=e.target.value;await boardsRef.doc(selectedBoard.id).update({backgroundPattern:e.target.value,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});});
   $('#board-search').addEventListener('click',()=>{const q=prompt('Find text on this page:');if(!q)return;const found=elements.find(el=>String(el.text||'').toLowerCase().includes(q.toLowerCase()));if(found){selection=new Set([found.id]);renderCanvas();showToast('Text found and selected');}else showToast('No matching text on this page');});
-  $('#board-export').addEventListener('click',()=>{renderCanvas();const a=document.createElement('a');a.download=`${selectedBoard?.name||'sketch'}.png`;a.href=canvas.toDataURL('image/png');a.click();});
+  $('#board-export').addEventListener('click',()=>{try{renderCanvas(true);const a=document.createElement('a');a.download=`${selectedBoard?.name||'sketch'}.png`;a.href=canvas.toDataURL('image/png');a.click();}catch(error){notice(`Could not export page: ${error.message}`);}finally{renderCanvas();}});
   $('#board-export-json').addEventListener('click',()=>{if(!selectedBoard)return;const payload={format:'taskmanager-sketch-board-v1',board:{id:selectedBoard.id,name:selectedBoard.name,backgroundPattern:selectedBoard.backgroundPattern},elements:elements.map(({_kind,...el})=>el)};const a=document.createElement('a');a.download=`${selectedBoard.name||'sketch'}.json`;a.href=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);});
   $('#board-import-json').addEventListener('click',()=>$('#board-json-file').click());
   $('#board-json-file').addEventListener('change',async event=>{const file=event.target.files?.[0];event.target.value='';if(!file||!selectedBoard)return;try{const data=JSON.parse(await file.text());const incoming=Array.isArray(data)?data:data.elements;if(!Array.isArray(incoming))throw new Error('JSON must contain an elements array.');if(!confirm(`Replace this page's ${elements.length} elements with ${incoming.length} imported elements?`))return;const normalized=incoming.map((el,i)=>({...el,id:Number(el.id)||i+1,_kind:labelForType(el)}));await saveElements(normalized,elements);elements=normalized;renderCanvas();}catch(error){notice(`JSON import failed: ${error.message}`);}});
