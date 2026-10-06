@@ -468,8 +468,13 @@
     return item;
   }
 
+  const pendingTableDrafts = new Map();
   function setElements(next) {
     const incoming = next.map(parseElement).filter(Boolean);
+    for (const draft of pendingTableDrafts.values()) {
+      if(draft.boardId!==selectedBoard?.id)continue;
+      for(const item of draft.items){const index=incoming.findIndex(entry=>entry.id===item.id);if(index>=0)incoming[index]=item;else incoming.push(item);}
+    }
     if (pageBodyEditor?.boardId === selectedBoard?.id) {
       const draft = pageBodyDraft();
       const index = incoming.findIndex(isPageBody);
@@ -951,9 +956,13 @@
     const scale = Math.max(.01, imageLayout.scale);
     for (const cell of state.node.querySelectorAll('.table-editor-cell')) {
       const row = Number(cell.dataset.cell.split(',')[0]);
-      cell.style.height = '0px';
-      heights[row] = Math.max(heights[row], (cell.scrollHeight + 2) / scale);
-      cell.style.height = '100%'; cell.scrollTop = 0;
+      const probe=cell.cloneNode(true);
+      probe.removeAttribute('contenteditable');probe.removeAttribute('id');probe.setAttribute('aria-hidden','true');
+      const width=cell.getBoundingClientRect().width;
+      probe.style.cssText += `;position:fixed;left:-100000px;top:0;width:${width}px;height:auto;min-height:0;max-height:none;visibility:hidden;overflow:visible;pointer-events:none;`;
+      document.body.append(probe);
+      heights[row] = Math.max(heights[row], Math.ceil((probe.getBoundingClientRect().height + 2) / scale));
+      probe.remove();
     }
     const height = heights.reduce((sum, value) => sum + value, 0), delta = height - before.h;
     state.item = { ...state.item, rowHeights: heights, rowMinHeights: state.minRowHeights, h: height };
@@ -986,7 +995,8 @@
     }
   }
 
-  function startTableEditor(item) {
+  function startTableEditor(item, options = {}) {
+    if(tableEditor?.item.id===item.id && tableEditor.boardId===selectedBoard?.id && tableEditor.node.isConnected)return;
     closePageBodyEditor(); closeTextElementEditor(); closeTableEditor();
     const area = $('.sketch-drawing-area');
     const rows = Math.max(1, Number(item.rows) || 1), cols = Math.max(1, Number(item.cols) || 1);
@@ -1013,15 +1023,28 @@
       cell.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); closeTableEditor(); } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); closeTableEditor(); } });
       node.append(cell);
     }
-    node.addEventListener('focusout', (event) => { if (!node.contains(event.relatedTarget) && !usingFormatToolbar(event.relatedTarget)) { clearTimeout(tableSaveTimer); tableSaveTimer = setTimeout(() => closeTableEditor(state), 120); } });
+    node.addEventListener('focusin',()=>{clearTimeout(tableSaveTimer);if(state.dirty)tableSaveTimer=setTimeout(()=>saveTableEditor(state),500);});
+    node.style.overflowAnchor='none';
+    node.addEventListener('focusout', (event) => { if (!node.contains(event.relatedTarget) && !usingFormatToolbar(event.relatedTarget)) { clearTimeout(tableSaveTimer); tableSaveTimer = setTimeout(() => {if(!node.contains(document.activeElement) && !usingFormatToolbar(document.activeElement))closeTableEditor(state);}, 120); } });
     area.append(node); area.classList.add('editing-table'); positionTableEditor();
     node.querySelectorAll('.table-editor-cell').forEach(cell => enableCodeFormatting(cell, () => { resizeTableRows(state); renderCanvas(); }));
-    node.querySelector('.table-editor-cell')?.focus();
+    let target=node.querySelector('.table-editor-cell');
+    if(Number.isFinite(options.clientX)&&Number.isFinite(options.clientY)) {
+      const rect=node.getBoundingClientRect(), localY=(options.clientY-rect.top)/imageLayout.scale;
+      let row=0, edge=0;const heights=tableRowHeights(item);
+      while(row<rows-1 && localY>edge+heights[row]){edge+=heights[row];row++;}
+      const col=Math.max(0,Math.min(cols-1,Math.floor((options.clientX-rect.left)/Math.max(1,rect.width)*cols)));
+      target=node.querySelector(`[data-cell="${row},${col}"]`)||target;
+    }
+    target?.focus({preventScroll:true});
+    if(target&&Number.isFinite(options.clientX))caretAtPoint(target,options.clientX,options.clientY);
   }
 
   async function saveTableEditor(state) {
     if (state.boardId !== selectedBoard?.id) return;
     const snapshot = [state.item, ...state.shifted.values()].map(cloneElement);
+    const draftKey=`${state.boardId}/${state.item.id}`, pending={boardId:state.boardId,items:snapshot};
+    pendingTableDrafts.set(draftKey,pending);
     state.savePromise = (state.savePromise || Promise.resolve()).catch(() => {}).then(async () => {
       const collection = boardsRef.doc(state.boardId).collection('elements');
       for (let offset = 0; offset < snapshot.length; offset += 400) {
@@ -1032,6 +1055,7 @@
         });
         await batch.commit();
       }
+      if(pendingTableDrafts.get(draftKey)===pending)pendingTableDrafts.delete(draftKey);
       $('#save-state').textContent = 'Saved to shared Firebase';
     }).catch(error => notice(`Could not save table cell: ${error.message}`));
     return state.savePromise;
@@ -1436,6 +1460,10 @@
     if (!selectedBoard) return;
     const p = point(event);
     lastCanvasPoint = p;
+    if(['SELECT','TEXT'].includes(activeTool) && !event.shiftKey){
+      const table=[...elements].reverse().find(item=>item._kind==='table'&&(()=>{const b=elementBounds(item);return p.x>=b.x&&p.x<=b.x+b.w&&p.y>=b.y&&p.y<=b.y+b.h;})());
+      if(table){event.preventDefault();selection.clear();startTableEditor(table,{clientX:event.clientX,clientY:event.clientY});return;}
+    }
       if (activeTool === 'TEXT') {
       event.preventDefault();
       const textHit = [...elements].reverse().find((el) => el._kind === 'textbox' && (() => { const b = elementBounds(el); return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h; })());
@@ -1619,6 +1647,26 @@
     if (!selectedBoard || !text.trim()) return;
     startPageBodyEditor(pageCenter(), text.trim(), { append: true });
   }
+  function structuredClipboard(html) {
+    if (!html) return false;
+    const doc=new DOMParser().parseFromString(html,'text/html');
+    doc.querySelectorAll('script,style,template').forEach(node=>node.remove());
+    const hasText=Boolean(doc.body.textContent.trim()), images=doc.querySelectorAll('img').length;
+    return Boolean((doc.querySelector('table') && (hasText || !images)) || (images && (hasText || images>1)));
+  }
+  async function preparePastedImage(block) {
+    const probe=new Image();probe.src=block.src;
+    try {await probe.decode();} catch {throw Error('A copied image is unavailable. Copy it directly from its original page and try again.');}
+    block.width=probe.naturalWidth||320;block.height=probe.naturalHeight||220;
+    if (!block.src.startsWith('data:')) return;
+    const blob=await (await fetch(block.src)).blob();
+    if(!blob.type.startsWith('image/') || blob.size>32*1024*1024)throw Error('A pasted image is unsupported or exceeds 32 MB.');
+    const ref=db.collection('sketchMedia').doc(),bytes=new Uint8Array(await blob.arrayBuffer()),size=400*1024;
+    for(let start=0,index=0;start<bytes.length;start+=size,index++)await ref.collection('chunks').doc(String(index).padStart(5,'0')).set({chunkIndex:index,chunkData:firebase.firestore.Blob.fromUint8Array(bytes.slice(start,start+size))});
+    await ref.set({byteLength:bytes.length,mimeType:blob.type,mediaName:'Pasted image',createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+    loadedImages.set(ref.id,probe);block.src=`firestore-media://${ref.id}`;block.mimeType=blob.type;
+  }
+
   function pasteClipboardImage(blob) {
     const saved=savedTextSelection;
     if(saved?.node.isConnected){
@@ -1633,6 +1681,10 @@
     if (navigator.clipboard?.read) {
       try {
         const clipboardItems = await navigator.clipboard.read();
+        for(const item of clipboardItems) if(item.types.includes('text/html')) {
+          const html=await (await item.getType('text/html')).text();
+          if(structuredClipboard(html)) return pasteTableContent(html,savedTextSelection?.node);
+        }
         for (const clipboardItem of clipboardItems) {
           const imageType=clipboardItem.types.find(type=>type.startsWith('image/'));
           if(imageType) return pasteClipboardImage(await clipboardItem.getType(imageType));
@@ -1714,11 +1766,11 @@
   }
 
   function clipboardTableBlocks(html) {
-    if (!/<table\b/i.test(html || '')) return null;
+    if (!/<(?:table|img)\b/i.test(html || '')) return null;
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const backgroundOf = pastedBackgroundReader(doc);
     doc.querySelectorAll('script,style,iframe,object,embed,template').forEach(node => node.remove());
-    if (!doc.querySelector('table')) return null;
+    if (!doc.querySelector('table,img')) return null;
     const plain = node => {
       if (node.nodeType === Node.TEXT_NODE) return node.textContent;
       if (node.nodeType !== Node.ELEMENT_NODE) return '';
@@ -1732,6 +1784,11 @@
     function visit(node) {
       if (node.nodeType === Node.TEXT_NODE) { text += node.textContent; return; }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (node.tagName === 'IMG') {
+        flush();const src=node.getAttribute('src')||'';
+        if(!/^(?:https?:\/\/|data:image\/)/i.test(src)) throw Error('The copied image uses a temporary local link. Copy the image directly from its original page.');
+        blocks.push({kind:'image',src});return;
+      }
       if (node.tagName === 'TABLE') {
         flush(); const grid = [], occupied = [], cellBackgroundColors = {};
         const rows = [...node.rows].filter(row => row.closest('table') === node);
@@ -1749,6 +1806,7 @@
           }
         });
         if (grid.length) blocks.push({kind:'table',grid,cellBackgroundColors});
+        node.querySelectorAll('img').forEach(visit);
         return;
       }
       if (node.tagName === 'BR') {text += '\n';return;}
@@ -1787,9 +1845,14 @@
     const origin = original ? elementBounds(original) : lastCanvasPoint || pageCenter();
     const width = Math.max(320, original?.w || 720), fontSize = Number(original?.fontSize) || 20;
     let y = origin.y;
+    try {for(const block of blocks) if(block.kind==='image') await preparePastedImage(block);} catch(error){notice(`Paste failed: ${error.message}`);return;}
+    if(selectedBoard?.id!==boardId)return;
     const added = blocks.map(block => {
       let item;
-      if (block.kind === 'table') {
+      if(block.kind==='image'){
+        const w=Math.min(width,block.width);
+        item={type:'com.impactyn.taskmanager.data.entities.SketchElement.Image',_kind:'image',uriString:block.src,mediaName:'Pasted image',mimeType:block.mimeType||'image/png',x:origin.x,y,w,h:w*block.height/block.width};
+      } else if (block.kind === 'table') {
         const rows=block.grid.length, cols=Math.max(1,...block.grid.map(row=>row.length));
         const w=Math.max(width,cols*90), cellText={};
         const rowHeights=block.grid.map((row,r)=>Math.max(28,...Array.from({length:cols},(_,c)=>{
@@ -1818,13 +1881,14 @@
         transaction.set(content,{nextElementId:nextId,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
       });
       if(selectedBoard?.id===boardId){recordUndo(snapshot);elements=[...shifted,...added];renderCanvas();}
-      lastSaveError='';$('#save-state').textContent='Saved to shared Firebase';showToast('Pasted text and editable tables');
+      lastSaveError='';$('#save-state').textContent='Saved to shared Firebase';showToast('Pasted content saved');
     } catch(error){lastSaveError=error.message;notice(`Could not paste table: ${error.message}. Your original content is unchanged.`);}
   }
 
   function handleSketchEditorPaste(event, editor) {
     const clipboard = event.clipboardData;
     const html = clipboard?.getData('text/html') || '';
+    if(structuredClipboard(html)){event.preventDefault();event.stopPropagation();void pasteTableContent(html,editor);return;}
     const imageItem = [...(clipboard?.items || [])].find((item) => item.type.toLowerCase().startsWith('image/'));
     const imageFile = imageItem?.getAsFile() || clipboard?.files?.[0];
     if (imageFile?.type?.startsWith('image/')) {
@@ -2120,6 +2184,7 @@
     if (!document.body.classList.contains('sketch-active') || !selectedBoard) return;
     if (event.defaultPrevented) return;
     const tableHtml = event.clipboardData?.getData('text/html') || '';
+    if(structuredClipboard(tableHtml) && !event.target.closest?.('input,textarea,select,[contenteditable]')){event.preventDefault();void pasteTableContent(tableHtml);return;}
     const clipboardItems = [...(event.clipboardData?.items || [])];
     const imageItem = clipboardItems.find((item) => item.type.toLowerCase().startsWith('image/'));
     const imageFile = imageItem?.getAsFile() || event.clipboardData?.files?.[0];
