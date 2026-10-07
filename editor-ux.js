@@ -55,6 +55,16 @@
     const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
     return true;
   }
+  function indentWithTab(event) {
+    if (event.defaultPrevented || event.key !== 'Tab' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.keyCode === 229) return false;
+    const node = editableTarget(event.target);
+    if (!node?.matches(editorSelector) || !node.isContentEditable) return false;
+    event.preventDefault(); event.stopPropagation();
+    // Use the same native insertion path as paste so undo and autosave still work.
+    return insertPlainText(node, '\t');
+  }
+  // Capture before table-cell navigation. Shift+Tab remains a keyboard exit route.
+  document.addEventListener('keydown', indentWithTab, true);
   function pageLayout(bounds, viewportWidth, viewportHeight, scale, previous = null) {
     // Grow the page without re-centering it or shrinking the scroll range mid-edit.
     // Reframing belongs to explicit zoom/fit actions, not text input or autosave.
@@ -77,5 +87,5 @@
       height: Math.max(viewportHeight, Math.ceil(worldHeight + 60), Math.ceil((previous?.height || 0) + shiftY))
     };
   }
-  window.TaskflowTextUX = Object.freeze({ editableTarget, captureSelection, restoreSelection, insertPlainText, moveTableCell, pageLayout });
+  window.TaskflowTextUX = Object.freeze({ editableTarget, captureSelection, restoreSelection, insertPlainText, moveTableCell, indentWithTab, pageLayout });
 })();

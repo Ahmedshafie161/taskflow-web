@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
-const context = { window: {} };
+const context = { window: {}, document: { addEventListener() {} } };
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../editor-ux.js'), 'utf8'), context);
 const layout = context.window.TaskflowTextUX.pageLayout;
 const bounds = { minX: -36, minY: -36, maxX: 736, maxY: 466 };

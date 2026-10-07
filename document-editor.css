@@ -1,6 +1,7 @@
 .sketch-drawing-area.document-mode{background:var(--surface-2);padding:24px;overflow:auto}
 .document-mode>#board-canvas,.document-mode>.canvas-page-extent,.document-mode>#empty-sketch{display:none!important}
 .document-host{display:none}.document-mode>.document-host{display:block}
+.document-text,.document-cell{tab-size:4}
 .notebook-document .sketch-ribbon-shell,.notebook-document .sketch-quickbar [aria-controls="sketch-ribbon-controls"]{display:none!important}
 .document-sheet{max-width:960px;min-height:calc(100vh - 240px);margin:0 auto;padding:40px 48px 80px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow)}
 .document-block{position:relative;margin:0 0 12px;min-width:0}
