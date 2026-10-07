@@ -1,6 +1,6 @@
 /* Shared editing primitives. Keep native selection and undo wherever supported. */
 (() => {
-  const editorSelector = '.page-body-editor,.table-editor-cell';
+  const editorSelector = '.page-body-editor,.table-editor-cell,.document-text,.document-cell';
   function editableTarget(target) {
     const element = target?.nodeType === 3 ? target.parentElement : target;
     return element?.closest?.('input,textarea,select,[contenteditable="true"],[contenteditable="plaintext-only"]') || null;

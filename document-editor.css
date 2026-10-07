@@ -1,0 +1,22 @@
+.sketch-drawing-area.document-mode{background:var(--surface-2);padding:24px;overflow:auto}
+.document-mode>#board-canvas,.document-mode>.canvas-page-extent,.document-mode>#empty-sketch{display:none!important}
+.document-host{display:none}.document-mode>.document-host{display:block}
+.notebook-document .sketch-ribbon-shell,.notebook-document .sketch-quickbar [aria-controls="sketch-ribbon-controls"]{display:none!important}
+.document-sheet{max-width:960px;min-height:calc(100vh - 240px);margin:0 auto;padding:40px 48px 80px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow)}
+.document-block{position:relative;margin:0 0 12px;min-width:0}
+.document-text{min-height:32px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;outline:0;caret-color:var(--accent);padding:3px 0}
+.document-text:empty:before{content:attr(data-placeholder);color:var(--muted);pointer-events:none}
+.document-text:focus{box-shadow:-3px 0 0 var(--accent);padding-left:10px;margin-left:-10px}
+.document-figure{margin:0;outline:0}.document-asset{max-width:100%;min-height:32px;overflow:hidden}
+.document-asset img,.document-asset video{display:block;width:100%;height:auto;max-width:100%}
+.document-image-controls{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;opacity:0;pointer-events:none}
+.document-image-block:hover .document-image-controls,.document-image-block:focus-within .document-image-controls,.document-image-block.selected .document-image-controls{opacity:1;pointer-events:auto}
+.document-image-controls button,.document-drawing button,.document-retry{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:8px 12px;cursor:pointer;color:var(--ink)}
+.document-image-controls [aria-pressed=true]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.document-insert{display:block;border:0;background:transparent;text-align:left;color:var(--muted);font:inherit;font-size:13px;cursor:text;min-height:30px;padding:4px 0;width:100%}
+.document-insert:hover,.document-insert:focus-visible{color:var(--accent);outline:1px dashed var(--accent);outline-offset:3px}
+.document-end{margin-top:12px;min-height:70px}.document-table{border-collapse:collapse;width:100%;table-layout:fixed}
+.document-table td{border:1px solid var(--line);padding:10px;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere;min-width:50px}
+.document-cell:focus{outline:2px solid var(--accent);outline-offset:-2px}.document-drawing{padding:16px;background:var(--surface-2);display:flex;justify-content:space-between;align-items:center;gap:8px}
+.document-retry[hidden]{display:none}.document-mode-button[aria-pressed=true]{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
+@media(max-width:780px){.sketch-drawing-area.document-mode{padding:10px}.document-sheet{padding:24px 20px 60px}.document-image-controls{opacity:1;pointer-events:auto}}

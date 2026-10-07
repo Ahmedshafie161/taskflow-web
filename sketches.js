@@ -69,6 +69,8 @@
   let imageLayout = { scale: 1, x: 0, y: 0, bounds: { minX: 0, minY: 0 } };
   let pageLayoutFrame = null;
   let awaitingInitialElements = true;
+  let documentEditor = null;
+  let documentMode = true;
   let lastSaveError = '';
 
   try { collapsedBoardIds = new Set(JSON.parse(localStorage.getItem('taskflow-sketch-collapsed-pages') || '[]')); } catch { collapsedBoardIds = new Set(); }
@@ -337,6 +339,7 @@
   }
 
   const pageExtent = document.createElement('div');
+  pageExtent.className = 'canvas-page-extent';
   pageExtent.setAttribute('aria-hidden','true');pageExtent.style.pointerEvents='none';
   canvas.before(pageExtent);canvas.style.position='absolute';
   $('.sketch-drawing-area').addEventListener('scroll',()=>requestCanvasRender(),{passive:true});
@@ -349,6 +352,7 @@
     if (canvasFrame) { cancelAnimationFrame(canvasFrame); canvasFrame = 0; }
     const area = $('.sketch-drawing-area');
     if (!selectedBoard) { $('#empty-sketch').hidden = false; return; }
+    if (documentMode && documentEditor) { $('#empty-sketch').hidden = true; documentEditor.refreshMedia(); return; }
     $('.sketch-drawing-area').dataset.pattern = String(selectedBoard.backgroundPattern || 'BLANK').toUpperCase();
     $('#empty-sketch').hidden = elements.length > 0 || drawing;
     // An empty click-to-type placeholder is just a caret, not page content.
@@ -526,6 +530,7 @@
     }
     if (tableEditor?.boardId === selectedBoard?.id && !tableEditor.dirty) { const current = incoming.find((element) => element.id === tableEditor.item.id); if (current) tableEditor.item = current; }
     elements = incoming.sort((a, b) => a.id - b.id);
+    if(documentMode)documentEditor?.sync(selectedBoard?.id,elements);
     if (selectedBoard) selectedBoard.elementCount = elements.length;
     $('#selected-board-meta').textContent = `${elements.length} elements · ${selectedBoard?.sourceSection || selectedBoard?.sourceNotebook || 'Firebase'}`;
     renderCanvas(); buildTree();
@@ -546,7 +551,8 @@
     finally { loadingLegacy = false; }
   }
 
-  function selectBoard(board) {
+  async function selectBoard(board) {
+    if (documentEditor?.hasPending() && !await documentEditor.flush()) { notice('Your document has unsaved edits. Retry saving before changing pages.'); return; }
     closePageBodyEditor();
     closeTextElementEditor();
     closeTableEditor();
@@ -558,6 +564,7 @@
     awaitingInitialElements = true;
     $('.sketch-drawing-area').scrollTo({ left: 0, top: 0 });
     elements = [];
+    documentEditor?.sync(board.id,[]);
     for (const image of loadedImages.values()) if (image instanceof Image && image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
     loadedImages.clear();
     $('#selected-board-name').disabled = false;
@@ -1746,6 +1753,11 @@
     if (selectedBoard?.id !== boardId || (target?.node.isConnected && !textUX.restoreSelection(target))) return showToast('Paste canceled because the editing position changed. Try again.');
     if (target && !target.node.isConnected) return showToast('Editor closed. Click where you want to paste and try again.');
     if (target) savedTextSelection = target;
+    if (documentMode) {
+      if(!plainText&&(image||/<(?:img|table)\b/i.test(html)))return showToast('Paste images and tables in Canvas, then return to Document. Nothing was pasted.');
+      if (text) return documentEditor.pasteText(text);
+      return showToast('For image or table paste, switch to Canvas first. It will also appear in Document view.');
+    }
     if (!textOnly && structuredClipboard(html)) return pasteTableContent(html,target?.node);
     if (!textOnly && (image || imageBlobFromHtml(html))) return pasteClipboardImage(image || imageBlobFromHtml(html));
     if (!target && !textOnly && text && clipboardElements.length && text === clipboardPlain) return pasteElements();
@@ -2115,7 +2127,7 @@
       lastSaveError='';$('#save-state').textContent='Saved to shared Firebase';
     } catch(error){lastSaveError=error.message;$('#save-state').textContent='Save failed';notice(`Could not save changed elements: ${error.message}`);throw error;}
   }
-  document.querySelectorAll('[data-tool]').forEach(button=>button.addEventListener('click',()=>{activeTool=button.dataset.tool;erase=activeTool==='ERASER';document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('active',b===button));canvas.style.cursor=activeTool==='SELECT'?'move':activeTool==='LASSO'?'crosshair':'crosshair';if(activeTool==='TEXT'&&selectedBoard)startPageBodyEditor(pageCenter());}));
+  document.querySelectorAll('[data-tool]').forEach(button=>button.addEventListener('click',async()=>{if(documentMode){if(button.dataset.tool==='TEXT')return documentEditor.focusEnd();await setDocumentMode(false);if(documentMode)return;}activeTool=button.dataset.tool;erase=activeTool==='ERASER';document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('active',b===button));canvas.style.cursor=activeTool==='SELECT'?'move':activeTool==='LASSO'?'crosshair':'crosshair';if(activeTool==='TEXT'&&selectedBoard)startPageBodyEditor(pageCenter());}));
   const ribbonGroups = { draw: ['draw', 'shapes'], insert: ['insert'], format: ['format'], page: ['page'], edit: ['edit'], view: ['view'] };
   document.querySelectorAll('[data-ribbon-tab]').forEach((button) => button.addEventListener('click', () => {
     const tab = button.dataset.ribbonTab;
@@ -2205,8 +2217,8 @@
   $('#board-json-file').addEventListener('change',async event=>{const file=event.target.files?.[0];event.target.value='';if(!file||!selectedBoard)return;try{const data=JSON.parse(await file.text());const incoming=Array.isArray(data)?data:data.elements;if(!Array.isArray(incoming))throw new Error('JSON must contain an elements array.');if(!confirm(`Replace this page's ${elements.length} elements with ${incoming.length} imported elements?`))return;const normalized=incoming.map((el,i)=>({...el,id:Number(el.id)||i+1,_kind:labelForType(el)}));await saveElements(normalized,elements);elements=normalized;renderCanvas();}catch(error){notice(`JSON import failed: ${error.message}`);}});
   async function replaceBoardElements(updated){const col=boardsRef.doc(selectedBoard.id).collection('elements');const old=await col.get();for(let i=0;i<old.docs.length;i+=400){const batch=db.batch();old.docs.slice(i,i+400).forEach(doc=>batch.delete(doc.ref));await batch.commit();}for(let i=0;i<updated.length;i+=400){const batch=db.batch();updated.slice(i,i+400).forEach(el=>{const item={...el};delete item._kind;batch.set(col.doc(String(item.id)),{elementJson:JSON.stringify(item),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});});await batch.commit();}}
   for(const id of ['#board-undo','#board-redo'])$(id).addEventListener('pointerdown',event=>{rememberTextSelection();event.preventDefault();});
-  $('#board-undo').addEventListener('click',async()=>{if(nativeTextCommand('undo'))return;if(!selectedBoard||!undoStack.length)return;redoStack.push(elements.map(el=>({...el})));elements=undoStack.pop();await replaceBoardElements(elements);renderCanvas();});
-  $('#board-redo').addEventListener('click',async()=>{if(nativeTextCommand('redo'))return;if(!selectedBoard||!redoStack.length)return;undoStack.push(elements.map(el=>({...el})));elements=redoStack.pop();await replaceBoardElements(elements);renderCanvas();});
+  $('#board-undo').addEventListener('click',async()=>{if(nativeTextCommand('undo'))return;if(documentMode||!selectedBoard||!undoStack.length)return;redoStack.push(elements.map(el=>({...el})));elements=undoStack.pop();await replaceBoardElements(elements);renderCanvas();});
+  $('#board-redo').addEventListener('click',async()=>{if(nativeTextCommand('redo'))return;if(documentMode||!selectedBoard||!redoStack.length)return;undoStack.push(elements.map(el=>({...el})));elements=redoStack.pop();await replaceBoardElements(elements);renderCanvas();});
   $('#board-clear').addEventListener('click',async()=>{if(!selectedBoard||!elements.length)return;if(!confirm(`Clear all ${elements.length} elements from “${selectedBoard.name}”?`))return;recordUndo();elements=[];await replaceBoardElements(elements);renderCanvas();});
   window.addEventListener('keydown', async (event) => {
     if (!document.body.classList.contains('sketch-active')) return;
@@ -2254,6 +2266,50 @@
   });
   // Keep frequent actions reachable without opening another ribbon tab.
   const quickBar = document.createElement('div'); quickBar.className='sketch-quickbar';quickBar.setAttribute('role','toolbar');quickBar.setAttribute('aria-label','Writing and navigation');
+  const documentHost=document.createElement('div');documentHost.className='document-host';$('.sketch-drawing-area').append(documentHost);
+  documentEditor=window.TaskflowDocument.create({
+    host:documentHost, readText:readRichEditor, writeText:richEditorContent,
+    status:message=>{$('#save-state').textContent=message;},
+    openCanvas:()=>setDocumentMode(false),
+    media:item=>{
+      const source=String(item.uriString||item.imageUrl||'');
+      const key=source.startsWith('firestore-media://')?source.slice('firestore-media://'.length):source;
+      const asset=loadedImages.get(key);
+      if(asset===undefined)requestImage(item);
+      if(!asset||asset==='loading')return {failed:asset===null};
+      return {src:asset.src,tag:asset.kind==='document'?'link':asset instanceof HTMLVideoElement?'video':'img'};
+    },
+    save:async(boardId,changes)=>{
+      const collection=boardsRef.doc(boardId).collection('elements'),content=boardsRef.doc(boardId).collection('content').doc('elements');
+      if(changes.length>400)throw Error('Too many pending changes. Please save a smaller section.');
+      let saved=[];
+      await db.runTransaction(async transaction=>{
+        const snap=await transaction.get(content);
+        let nextId=Math.max(Number(snap.get('nextElementId'))||1,...(selectedBoard?.id===boardId?elements:[]).map(item=>Number(item.id)+1));
+        saved=changes.map(draft=>{const item={...draft,id:draft.id<0?nextId++:draft.id};const record={...item};delete record._kind;
+          transaction.set(collection.doc(String(item.id)),{elementJson:JSON.stringify(record),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+          return {previousId:draft.id,item};});
+        transaction.set(content,{nextElementId:nextId,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
+      });
+      if(selectedBoard?.id===boardId){for(const {item} of saved){const index=elements.findIndex(entry=>entry.id===item.id);if(index>=0)elements[index]=item;else elements.push(item);}}
+      return saved;
+    }
+  });
+  const documentButton=document.createElement('button'),canvasButton=document.createElement('button');
+  for(const [button,label,mode] of [[documentButton,'Document',true],[canvasButton,'Canvas',false]]){button.type='button';button.className='tool document-mode-button';button.textContent=label;button.addEventListener('click',()=>setDocumentMode(mode));quickBar.append(button);}
+  async function setDocumentMode(mode) {
+    if(documentEditor.hasPending()&&!await documentEditor.flush())return;
+    const editors=[pageBodyEditor,textElementEditor,tableEditor].filter(Boolean);
+    closePageBodyEditor();closeTextElementEditor();closeTableEditor();
+    await Promise.all(editors.map(editor=>editor.savePromise).filter(Boolean));
+    if(editors.length&&lastSaveError){notice('Save the current edit successfully before switching views.');return;}
+    savedTextSelection=null;window.getSelection()?.removeAllRanges();
+    documentMode=mode;$('.sketch-drawing-area').classList.toggle('document-mode',mode);document.body.classList.toggle('notebook-document',mode);
+    documentButton.setAttribute('aria-pressed',String(mode));canvasButton.setAttribute('aria-pressed',String(!mode));
+    if(selectedBoard)documentEditor.sync(selectedBoard.id,elements);
+    renderCanvas();
+  }
+  void setDocumentMode(true);
   const quickActions=[['Type','[data-tool="TEXT"]','Click the page to type'],['Pen','[data-tool="PEN"]','Draw with a pen'],['Undo','#board-undo','Undo (Ctrl/Cmd+Z)'],['Redo','#board-redo','Redo (Ctrl/Cmd+Shift+Z)']];
   for(const [label,target,title] of quickActions){const button=document.createElement('button');button.type='button';button.className='tool';button.textContent=label;button.title=title;button.addEventListener('pointerdown',event=>event.preventDefault());button.addEventListener('click',()=>$(target).click());quickBar.append(button);}
   const toolsToggle=document.createElement('button');toolsToggle.type='button';toolsToggle.className='tool';toolsToggle.textContent='Hide tools';toolsToggle.setAttribute('aria-expanded','true');
