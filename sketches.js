@@ -1,4 +1,5 @@
 (() => {
+  const textUX = window.TaskflowTextUX;
   const $ = (s) => document.querySelector(s);
   const status = (message, connected = false) => {
     $('#sync-label').textContent = message;
@@ -66,6 +67,8 @@
   let draggedBoardId = null;
   let collapsedBoardIds = new Set();
   let imageLayout = { scale: 1, x: 0, y: 0, bounds: { minX: 0, minY: 0 } };
+  let pageLayoutFrame = null;
+  let awaitingInitialElements = true;
   let lastSaveError = '';
 
   try { collapsedBoardIds = new Set(JSON.parse(localStorage.getItem('taskflow-sketch-collapsed-pages') || '[]')); } catch { collapsedBoardIds = new Set(); }
@@ -348,13 +351,21 @@
     if (!selectedBoard) { $('#empty-sketch').hidden = false; return; }
     $('.sketch-drawing-area').dataset.pattern = String(selectedBoard.backgroundPattern || 'BLANK').toUpperCase();
     $('#empty-sketch').hidden = elements.length > 0 || drawing;
-    const b = boundsFor([...elements,...[...pendingImagePreviews].filter(preview=>preview.boardId===selectedBoard.id).map(preview=>preview.item)]);
-    const worldW = Math.max(1, b.maxX - b.minX), worldH = Math.max(1, b.maxY - b.minY);
+    // An empty click-to-type placeholder is just a caret, not page content.
+    // Including it expands the left/top bounds and introduces scroll rounding at fit zoom.
+    const pageContent = elements.filter(item => !(item._kind === 'textbox' && item.id < 0 && !item.text));
+    const contentBounds = boundsFor([...pageContent,...[...pendingImagePreviews].filter(preview=>preview.boardId===selectedBoard.id).map(preview=>preview.item)]);
     const scale = zoomFactor;
     let dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const rectWidth = Math.max(area.clientWidth, Math.ceil(worldW * scale + 60));
-    const rectHeight = Math.max(area.clientHeight, Math.ceil(worldH * scale + 60));
-    pageExtent.style.width=`${rectWidth}px`;pageExtent.style.height=`${rectHeight}px`;
+    const layout = textUX.pageLayout(contentBounds, area.clientWidth, area.clientHeight, scale, exporting ? null : pageLayoutFrame);
+    const b = layout.bounds, rectWidth = layout.width, rectHeight = layout.height;
+    if (!exporting) {
+      const left = area.scrollLeft, top = area.scrollTop;
+      pageLayoutFrame = layout;
+      pageExtent.style.width=`${rectWidth}px`;pageExtent.style.height=`${rectHeight}px`;
+      if (layout.shiftX) area.scrollLeft = left + layout.shiftX;
+      if (layout.shiftY) area.scrollTop = top + layout.shiftY;
+    }
     const scrollX=exporting?0:area.scrollLeft, scrollY=exporting?0:area.scrollTop;
     const visibleWidth=exporting?rectWidth:area.clientWidth, visibleHeight=exporting?rectHeight:area.clientHeight;
     canvas.style.left=`${scrollX}px`;canvas.style.top=`${scrollY}px`;
@@ -371,7 +382,7 @@
     ctx.imageSmoothingQuality = 'high';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
-    const x = Math.max(30, (rectWidth - worldW * scale) / 2)-scrollX, y = 30-scrollY;
+    const x = layout.paddingX-scrollX, y = 30-scrollY;
     imageLayout = { scale, x, y, bounds: b };
     const zoomLabel = $('#zoom-label'); if (zoomLabel) zoomLabel.textContent = `${Math.round(zoomFactor * 100)}%`;
     positionPageBodyEditor();
@@ -470,6 +481,10 @@
 
   const pendingTableDrafts = new Map();
   function setElements(next) {
+    if (awaitingInitialElements) {
+      awaitingInitialElements = false;
+      if (!elements.length && !drawing && !pageBodyEditor && !textElementEditor && !tableEditor) pageLayoutFrame = null;
+    }
     const incoming = next.map(parseElement).filter(Boolean);
     for (const draft of pendingTableDrafts.values()) {
       if(draft.boardId!==selectedBoard?.id)continue;
@@ -539,6 +554,9 @@
     if (contentListener) contentListener();
     selectedBoard = board;
     zoomFactor = 1;
+    pageLayoutFrame = null;
+    awaitingInitialElements = true;
+    $('.sketch-drawing-area').scrollTo({ left: 0, top: 0 });
     elements = [];
     for (const image of loadedImages.values()) if (image instanceof Image && image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
     loadedImages.clear();
@@ -860,10 +878,13 @@
   }
   function enableCodeFormatting(node, onLayout) {
     let timer, composing=false;
-    const schedule=()=>{clearTimeout(timer);timer=setTimeout(()=>{if(!composing&&node.isConnected){decorateCode(node);onLayout?.();}},180);};
+    // Do not replace text nodes under the caret: this disrupted selection and
+    // native undo after a short pause while typing. Canvas highlighting remains.
+    const schedule=()=>{clearTimeout(timer);timer=setTimeout(()=>{if(!composing&&node.isConnected&&!node.contains(document.activeElement)&&!usingFormatToolbar(document.activeElement)){decorateCode(node);onLayout?.();}},180);};
     node.addEventListener('compositionstart',()=>{composing=true;clearTimeout(timer);});
     node.addEventListener('compositionend',()=>{composing=false;schedule();});
     node.addEventListener('input',schedule);
+    node.addEventListener('blur',schedule);
     decorateCode(node);
   }
 
@@ -913,15 +934,18 @@
   }
 
   function rememberTextSelection() {
-    const selected = window.getSelection();
-    if (!selected?.rangeCount) return;
-    const range = selected.getRangeAt(0), element = range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
-    const node = element?.closest('.page-body-editor,.table-editor-cell');
-    if (node && node.contains(range.startContainer) && node.contains(range.endContainer)) savedTextSelection = { node, range: range.cloneRange() };
+    const captured = textUX.captureSelection();
+    if (captured) savedTextSelection = captured;
   }
   document.addEventListener('selectionchange', rememberTextSelection);
   $('.sketch-ribbon-shell').addEventListener('pointerdown', rememberTextSelection, true);
-  function usingFormatToolbar(target) { return Boolean(target?.closest?.('.sketch-ribbon-shell')); }
+  function usingFormatToolbar(target) { return Boolean(target?.closest?.('.sketch-ribbon-shell,.sketch-quickbar,.editor-quick-actions')); }
+  function nativeTextCommand(command) {
+    const saved = textUX.captureSelection() || savedTextSelection;
+    if (!textUX.restoreSelection(saved)) return false;
+    document.execCommand(command); rememberTextSelection();
+    return true;
+  }
 
   function drawRichText(text, runs, x, y, width, fontSize, family, lineHeight) {
     let cursor = 0, line = 0, offset = 0;
@@ -1011,7 +1035,7 @@
       const background = tableCellBackground(item,row,col);
       if(background) cell.style.backgroundColor = background;
       cell.spellcheck = false;
-      cell.addEventListener('paste', event => { event.preventDefault(); document.execCommand('insertText', false, event.clipboardData?.getData('text/plain') || ''); });
+      cell.addEventListener('paste', event => { event.preventDefault(); event.stopPropagation(); textUX.insertPlainText(cell, event.clipboardData?.getData('text/plain') || ''); });
       cell.addEventListener('input', () => {
         const rich = readRichEditor(cell);
         const cellText = { ...(state.item.cellText || {}), [cell.dataset.cell]: rich.text };
@@ -1020,7 +1044,7 @@
         state.dirty = true; elements = elements.map((entry) => entry.id === state.item.id ? state.item : entry);
         resizeTableRows(state); clearTimeout(tableSaveTimer); tableSaveTimer = setTimeout(() => saveTableEditor(state), 500); renderCanvas();
       });
-      cell.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); closeTableEditor(); } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); closeTableEditor(); } });
+      cell.addEventListener('keydown', (event) => { if(event.isComposing || event.keyCode===229)return; if(textUX.moveTableCell(event,cell,node))return; if (event.key === 'Escape') { event.preventDefault(); closeTableEditor(); } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); closeTableEditor(); } });
       node.append(cell);
     }
     node.addEventListener('focusin',()=>{clearTimeout(tableSaveTimer);if(state.dirty)tableSaveTimer=setTimeout(()=>saveTableEditor(state),500);});
@@ -1191,6 +1215,7 @@
       queueTextElementSave(state);
     });
     editor.addEventListener('keydown', (event) => {
+      if (event.isComposing || event.keyCode === 229) return;
       if (event.key === 'Escape' || (event.key === 'Enter' && (event.metaKey || event.ctrlKey))) {
         event.preventDefault(); closeTextElementEditor(state);
       }
@@ -1211,10 +1236,12 @@
     closePageBodyEditor();
     closeTextElementEditor();
     const area = $('.sketch-drawing-area');
+    const clickedX = imageLayout.x + (worldPoint.x - imageLayout.bounds.minX) * zoomFactor;
+    const remainingWidth = (area.clientWidth - clickedX - 30) / zoomFactor;
     const item = {
       type: 'com.impactyn.taskmanager.data.entities.SketchElement.TextBox', kind: 'textbox', _kind: 'textbox',
       id: nextProvisionalTextId--, x: Number(worldPoint.x) || 0, y: Number(worldPoint.y) || 0,
-      w: Math.max(320, Math.min(1600, (area.clientWidth - 72) / zoomFactor)), h: 40, text: '',
+      w: Math.max(160, Math.min(1600, remainingWidth)), h: 40, text: '',
       fontSize: Number($('#board-font-size').value) || 20,
       fontFamily: $('#board-font-family').value || 'Arial', colorArgb: activeColor, borderWidth: 0
     };
@@ -1426,6 +1453,7 @@
         queuePageBodySave(state);
       });
       editor.addEventListener('keydown', (event) => {
+        if (event.isComposing || event.keyCode === 229) return;
         if (event.key === 'Escape') { event.preventDefault(); closePageBodyEditor(state); }
         else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); closePageBodyEditor(state); }
       });
@@ -1619,12 +1647,23 @@
     } catch (error) { elements = before; renderCanvas(); notice(`Could not format text: ${error.message}`); }
   }
   async function copySelection() {
+    const saved = textUX.captureSelection() || savedTextSelection;
+    if (saved?.node.isConnected && !saved.range.collapsed && textUX.restoreSelection(saved)) {
+      const text = window.getSelection().toString();
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+        else if (!document.execCommand('copy')) throw Error('Clipboard unavailable');
+        clipboardElements = []; clipboardPlain = '';
+        showToast('Selected text copied'); return true;
+      } catch { showToast('Clipboard access unavailable. Press Ctrl/Cmd+C to copy selected text.'); return false; }
+    }
     const picked = selectedElements();
-    if (!picked.length) return showToast('Select something on the page first');
+    if (!picked.length) { showToast('Select text or items on the page first'); return false; }
     clipboardElements = picked.map(cloneElement);
     clipboardPlain = picked.filter((el) => el._kind === 'textbox' || el._kind === 'treenode').map((el) => el.text || '').filter(Boolean).join('\n') || `${picked.length} sketch element${picked.length === 1 ? '' : 's'}`;
     try { await navigator.clipboard?.writeText(clipboardPlain); } catch { /* In-memory sketch copy still works. */ }
     showToast(`Copied ${picked.length} item${picked.length === 1 ? '' : 's'} — paste with Ctrl/Cmd+V`);
+    return true;
   }
   async function pasteElements(items = clipboardElements) {
     if (!selectedBoard) return showToast('Choose a page before pasting');
@@ -1644,8 +1683,12 @@
     } catch (error) { renderCanvas(); notice(`Paste stopped: ${error.message}`); }
   }
   function pasteText(text) {
-    if (!selectedBoard || !text.trim()) return;
-    startPageBodyEditor(pageCenter(), text.trim(), { append: true });
+    if (!selectedBoard || !text) return;
+    const saved = textUX.captureSelection() || savedTextSelection;
+    if (textUX.restoreSelection(saved)) {
+      textUX.insertPlainText(saved.node,text); rememberTextSelection(); return;
+    }
+    startPageBodyEditor(pageCenter(), text, { insertText: true });
   }
   function structuredClipboard(html) {
     if (!html) return false;
@@ -1676,46 +1719,38 @@
     }
     return pasteImage(blob,pageCenter());
   }
-  async function pasteButtonAction() {
+  async function pasteButtonAction({ plainText = false } = {}) {
     if (!selectedBoard) return showToast('Choose a page before pasting');
+    const boardId = selectedBoard.id;
+    const target = textUX.captureSelection() || (savedTextSelection?.node.isConnected ? savedTextSelection : null);
+    const textOnly = plainText || target?.node.matches('.table-editor-cell');
+    let html = '', text = '', image = null, clipboardRead = false;
     if (navigator.clipboard?.read) {
       try {
         const clipboardItems = await navigator.clipboard.read();
-        for(const item of clipboardItems) if(item.types.includes('text/html')) {
-          const html=await (await item.getType('text/html')).text();
-          if(structuredClipboard(html)) return pasteTableContent(html,savedTextSelection?.node);
+        for (const item of clipboardItems) {
+          if (!text && item.types.includes('text/plain')) text = await (await item.getType('text/plain')).text();
+          if (!html && item.types.includes('text/html')) html = await (await item.getType('text/html')).text();
+          const mime = item.types.find(type => type.startsWith('image/'));
+          if (!textOnly && !image && mime) image = await item.getType(mime);
         }
-        for (const clipboardItem of clipboardItems) {
-          const imageType=clipboardItem.types.find(type=>type.startsWith('image/'));
-          if(imageType) return pasteClipboardImage(await clipboardItem.getType(imageType));
-        }
-        for (const clipboardItem of clipboardItems) {
-          if (clipboardItem.types.includes('text/html')) {
-            const html = await (await clipboardItem.getType('text/html')).text();
-            if (/<table\b/i.test(html)) {
-              if (savedTextSelection?.node.isConnected) { savedTextSelection.node.focus({preventScroll:true}); const selection=window.getSelection(); selection.removeAllRanges(); selection.addRange(savedTextSelection.range); }
-              return pasteTableContent(html, savedTextSelection?.node);
-            }
-          }
-          const mime = clipboardItem.types.find((type) => type.startsWith('image/'));
-          if (mime) return pasteClipboardImage(await clipboardItem.getType(mime));
-          if (clipboardItem.types.includes('text/html')) {
-            const html = await (await clipboardItem.getType('text/html')).text();
-            const image = imageBlobFromHtml(html);
-            if (image) return pasteClipboardImage(image);
-          }
-        }
-      } catch (error) { console.info('Clipboard image read needs keyboard paste fallback:', error); }
+        clipboardRead = true;
+      } catch { /* Try the text-only API; never substitute an older internal copy. */ }
     }
-    try {
-      const text = await navigator.clipboard?.readText();
-      const image = imageBlobFromHtml(text || '');
-      if (image) return pasteClipboardImage(image);
-      if (text && clipboardElements.length && text === clipboardPlain) return pasteElements();
-      if (text?.trim()) return pasteText(text);
-    } catch (error) { console.info('Clipboard text read unavailable:', error); }
-    if (clipboardElements.length) return pasteElements();
-    showToast('Tap Paste, or press Ctrl/Cmd+V to insert the copied image');
+    if (!clipboardRead) {
+      try {
+        if (!navigator.clipboard?.readText) throw Error('Clipboard unavailable');
+        text = await navigator.clipboard.readText(); clipboardRead = true;
+      } catch { return showToast('Clipboard access blocked. Click in the page and press Ctrl/Cmd+V.'); }
+    }
+    if (selectedBoard?.id !== boardId || (target?.node.isConnected && !textUX.restoreSelection(target))) return showToast('Paste canceled because the editing position changed. Try again.');
+    if (target && !target.node.isConnected) return showToast('Editor closed. Click where you want to paste and try again.');
+    if (target) savedTextSelection = target;
+    if (!textOnly && structuredClipboard(html)) return pasteTableContent(html,target?.node);
+    if (!textOnly && (image || imageBlobFromHtml(html))) return pasteClipboardImage(image || imageBlobFromHtml(html));
+    if (!target && !textOnly && text && clipboardElements.length && text === clipboardPlain) return pasteElements();
+    if (text) return pasteText(text);
+    showToast(textOnly ? 'No plain text on the clipboard. Use Paste for an image or table.' : 'Nothing supported on the clipboard. Copy text, a table, or an image first.');
   }
 
   function imageBlobFromHtml(html) {
@@ -1908,7 +1943,8 @@
     const plain = clipboard?.getData('text/plain');
     if (plain != null) {
       event.preventDefault();
-      document.execCommand('insertText', false, plain);
+      event.stopPropagation();
+      textUX.insertPlainText(editor, plain);
     }
   }
 
@@ -2108,9 +2144,17 @@
     $('#toggle-board-tree').title = allPagesCollapsed ? 'Expand all pages' : 'Collapse all pages';
     $('#toggle-board-tree').setAttribute('aria-label', allPagesCollapsed ? 'Expand all pages' : 'Collapse all pages'); buildTree();
   });
+  $('#board-copy').title='Copy selected text or objects (Ctrl/Cmd+C)';
+  $('#board-copy').addEventListener('pointerdown',event=>{rememberTextSelection();event.preventDefault();});
   $('#board-copy').addEventListener('click', copySelection);
   $('#board-paste').addEventListener('pointerdown',event=>{rememberTextSelection();event.preventDefault();});
   $('#board-paste').addEventListener('click', pasteButtonAction);
+  const pastePlainButton=document.createElement('button');
+  pastePlainButton.type='button';pastePlainButton.className='tool';pastePlainButton.textContent='Paste text';
+  pastePlainButton.title='Paste plain text at the cursor, without images or tables';
+  pastePlainButton.addEventListener('pointerdown',event=>{rememberTextSelection();event.preventDefault();});
+  pastePlainButton.addEventListener('click',()=>pasteButtonAction({plainText:true}));
+  $('#board-paste').after(pastePlainButton);
   $('#board-delete-selection').addEventListener('click', deleteSelection);
   $('#board-image-table').addEventListener('click', imageToEditableTable);
   $('#board-font-size').addEventListener('change', (event) => { event.target.value = String(Math.max(10, Math.min(96, Number(event.target.value) || 20))); formatSelectedText({ fontSize: Number(event.target.value) }); });
@@ -2123,6 +2167,7 @@
       const width = Math.max(1, bounds.maxX - bounds.minX), height = Math.max(1, bounds.maxY - bounds.minY);
       zoomFactor = Math.max(0.1, Math.min(1.4, (area.clientWidth - 60) / width, (area.clientHeight - 60) / height));
     } else zoomFactor = Math.max(0.1, Math.min(4, Number(nextZoom) || 1));
+    pageLayoutFrame = null;
     renderCanvas();
     if (fit) { area.scrollTo({ left: 0, top: 0 }); return; }
     const x = canvas.offsetLeft + imageLayout.x + (oldCenter.x - imageLayout.bounds.minX) * imageLayout.scale;
@@ -2159,15 +2204,17 @@
   $('#board-import-json').addEventListener('click',()=>$('#board-json-file').click());
   $('#board-json-file').addEventListener('change',async event=>{const file=event.target.files?.[0];event.target.value='';if(!file||!selectedBoard)return;try{const data=JSON.parse(await file.text());const incoming=Array.isArray(data)?data:data.elements;if(!Array.isArray(incoming))throw new Error('JSON must contain an elements array.');if(!confirm(`Replace this page's ${elements.length} elements with ${incoming.length} imported elements?`))return;const normalized=incoming.map((el,i)=>({...el,id:Number(el.id)||i+1,_kind:labelForType(el)}));await saveElements(normalized,elements);elements=normalized;renderCanvas();}catch(error){notice(`JSON import failed: ${error.message}`);}});
   async function replaceBoardElements(updated){const col=boardsRef.doc(selectedBoard.id).collection('elements');const old=await col.get();for(let i=0;i<old.docs.length;i+=400){const batch=db.batch();old.docs.slice(i,i+400).forEach(doc=>batch.delete(doc.ref));await batch.commit();}for(let i=0;i<updated.length;i+=400){const batch=db.batch();updated.slice(i,i+400).forEach(el=>{const item={...el};delete item._kind;batch.set(col.doc(String(item.id)),{elementJson:JSON.stringify(item),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});});await batch.commit();}}
-  $('#board-undo').addEventListener('click',async()=>{if(!selectedBoard||!undoStack.length)return;redoStack.push(elements.map(el=>({...el})));elements=undoStack.pop();await replaceBoardElements(elements);renderCanvas();});
-  $('#board-redo').addEventListener('click',async()=>{if(!selectedBoard||!redoStack.length)return;undoStack.push(elements.map(el=>({...el})));elements=redoStack.pop();await replaceBoardElements(elements);renderCanvas();});
+  for(const id of ['#board-undo','#board-redo'])$(id).addEventListener('pointerdown',event=>{rememberTextSelection();event.preventDefault();});
+  $('#board-undo').addEventListener('click',async()=>{if(nativeTextCommand('undo'))return;if(!selectedBoard||!undoStack.length)return;redoStack.push(elements.map(el=>({...el})));elements=undoStack.pop();await replaceBoardElements(elements);renderCanvas();});
+  $('#board-redo').addEventListener('click',async()=>{if(nativeTextCommand('redo'))return;if(!selectedBoard||!redoStack.length)return;undoStack.push(elements.map(el=>({...el})));elements=redoStack.pop();await replaceBoardElements(elements);renderCanvas();});
   $('#board-clear').addEventListener('click',async()=>{if(!selectedBoard||!elements.length)return;if(!confirm(`Clear all ${elements.length} elements from “${selectedBoard.name}”?`))return;recordUndo();elements=[];await replaceBoardElements(elements);renderCanvas();});
   window.addEventListener('keydown', async (event) => {
     if (!document.body.classList.contains('sketch-active')) return;
-    const editable = event.target.matches?.('input,textarea,select,[contenteditable]');
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+    const editable = textUX.editableTarget(event.target);
     const mod = event.metaKey || event.ctrlKey;
     if (mod && event.key.toLowerCase() === 'c' && selection.size && !editable) { event.preventDefault(); copySelection(); return; }
-    if (mod && event.key.toLowerCase() === 'x' && selection.size && !editable) { event.preventDefault(); await copySelection(); await deleteSelection(); return; }
+    if (mod && event.key.toLowerCase() === 'x' && selection.size && !editable) { event.preventDefault(); if(await copySelection())await deleteSelection(); return; }
     if (mod && event.key.toLowerCase() === 'z' && !editable) {
       event.preventDefault();
       if (event.shiftKey) $('#board-redo').click(); else $('#board-undo').click();
@@ -2180,9 +2227,14 @@
       event.preventDefault(); startPageBodyEditor(pageCenter(), event.key, { insertText: true });
     }
   });
+  for(const type of ['copy','cut'])window.addEventListener(type,event=>{
+    if(textUX.editableTarget(event.target)){clipboardElements=[];clipboardPlain='';}
+  });
   window.addEventListener('paste', (event) => {
     if (!document.body.classList.contains('sketch-active') || !selectedBoard) return;
     if (event.defaultPrevented) return;
+    // Never redirect an input's clipboard image into the canvas or upload it.
+    if (textUX.editableTarget(event.target)) return;
     const tableHtml = event.clipboardData?.getData('text/html') || '';
     if(structuredClipboard(tableHtml) && !event.target.closest?.('input,textarea,select,[contenteditable]')){event.preventDefault();void pasteTableContent(tableHtml);return;}
     const clipboardItems = [...(event.clipboardData?.items || [])];
@@ -2210,6 +2262,7 @@
   const saveStatus=$('#save-state');saveStatus.setAttribute('role','status');saveStatus.setAttribute('aria-live','polite');quickBar.append(saveStatus);
   $('.editor-heading').after(quickBar);
   const uxStyle=document.createElement('style');uxStyle.textContent=`
+    .sketch-drawing-area{overflow-anchor:none;scroll-behavior:auto;scrollbar-gutter:stable}
     .sketch-toolbar p{display:none}.sketch-toolbar{min-height:40px}.sketch-toolbar h1{font-size:16px}
     .sketch-quickbar{display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid var(--line);background:var(--surface);flex-shrink:0;overflow-x:auto}
     .sketch-quickbar .tool{min-height:34px;padding:0 12px;white-space:nowrap}.sketch-quickbar #save-state{margin-left:auto;max-width:210px;overflow:hidden;text-overflow:ellipsis}
@@ -2217,6 +2270,10 @@
     .board-search{height:39px;font-size:12px}.sketch-ribbon-tabs{height:34px}.sketch-ribbon-tabs button{font-size:11px}.sketch-ribbon .tool{min-height:34px}
     .sketch-quickbar button:focus-visible,.sketch-ribbon button:focus-visible,.board-entry:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     .sketch-ribbon-shell[hidden]{display:none!important}.editor-heading small{max-width:170px;overflow:hidden;text-overflow:ellipsis}.sketch-drawing-area{scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+    .page-body-editor,.table-editor-cell{caret-color:var(--accent);tab-size:4}
+    .page-body-editor:focus{outline:1px dashed var(--accent);outline-offset:4px}
+    .table-editor-cell:focus{outline:2px solid var(--accent);outline-offset:-2px}
+    .editor-quick-actions{flex-wrap:wrap}
     @media(max-width:780px){.sketch-quickbar{padding:5px 8px;gap:4px}.sketch-quickbar .tool{padding:0 9px;min-height:36px}.sketch-quickbar #save-state{font-size:9px!important;max-width:115px}.editor-heading .board-actions{display:none}.sketch-toolbar h1{font-size:14px}}
     #sketch-view:fullscreen .sketch-quickbar{padding:3px 7px}#sketch-view:fullscreen .sketch-quickbar .tool{min-height:30px}
   `;document.head.append(uxStyle);

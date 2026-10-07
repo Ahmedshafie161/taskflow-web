@@ -1,0 +1,27 @@
+<!doctype html><meta charset="utf-8"><title>Taskflow editor regression tests</title>
+<style>body{font:16px system-ui;margin:32px;max-width:850px;color:#24352f}.page-body-editor,.table-editor-cell{white-space:pre-wrap;border:1px solid #aaa;padding:15px;margin:10px 0}.pass{color:#176544}.fail{color:#b02030}</style>
+<h1>Typing & clipboard regression tests</h1><p>Isolated local fixtures; no Firebase or personal data.</p>
+<button id="run">Run tests</button><ol id="results"></ol>
+<div id="editor" class="page-body-editor" contenteditable="true" role="textbox" aria-label="Test editor">alpha beta</div>
+<div id="table"><div class="table-editor-cell" contenteditable="true">First</div><div class="table-editor-cell" contenteditable="true">Second</div></div>
+<script src="../editor-ux.js"></script><script>
+const UX=TaskflowTextUX,editor=document.querySelector('#editor'),results=document.querySelector('#results');
+function select(start,end){editor.focus();const range=document.createRange();range.setStart(editor.firstChild,start);range.setEnd(editor.firstChild,end);const s=getSelection();s.removeAllRanges();s.addRange(range);}
+function reset(text='alpha beta'){editor.replaceChildren(document.createTextNode(text));select(0,0);}
+function test(name,fn){const item=document.createElement('li');try{fn();item.className='pass';item.textContent='PASS — '+name;}catch(e){item.className='fail';item.textContent='FAIL — '+name+': '+e.message;}results.append(item);}
+function check(value,message='Assertion failed'){if(!value)throw Error(message);}
+document.querySelector('#run').onclick=()=>{
+ results.replaceChildren();
+ test('Nested styled text is treated as editable',()=>{editor.innerHTML='<span>styled</span>';check(UX.editableTarget(editor.firstChild)===editor);});
+ test('Paste replaces selected text and preserves indentation, tabs and line breaks',()=>{reset();select(6,10);check(UX.insertPlainText(editor,'  العربية\tDeutsch\nnext'));check(editor.innerText==='alpha   العربية\tDeutsch\nnext',JSON.stringify({text:editor.innerText,html:editor.innerHTML}));});
+ test('Saved caret survives a toolbar focus change',()=>{reset();select(5,5);const saved=UX.captureSelection();document.querySelector('#run').focus();check(UX.insertPlainText(editor,'!',saved));check(editor.textContent==='alpha! beta');});
+ test('Native undo restores text after paste',()=>{reset();select(6,10);UX.insertPlainText(editor,'new');document.execCommand('undo');check(editor.textContent==='alpha beta');});
+ test('Markup is inserted as literal text, not executable HTML',()=>{reset('');select(0,0);UX.insertPlainText(editor,'<img src=x onerror=alert(1)>');check(!editor.querySelector('img'));check(editor.textContent.includes('<img'));});
+ test('Fallback insertion emits exactly one input event',()=>{reset();let count=0;const countInput=()=>count++;editor.addEventListener('input',countInput);const original=document.execCommand;document.execCommand=()=>false;try{check(UX.insertPlainText(editor,'ok'));}finally{document.execCommand=original;editor.removeEventListener('input',countInput);}check(count===1);});
+ test('Detached editor selection is rejected',()=>{reset();const saved=UX.captureSelection();editor.remove();check(!UX.restoreSelection(saved));document.body.append(editor);});
+ test('Tab advances and selects the next table cell',()=>{const cells=document.querySelectorAll('.table-editor-cell');const event=new KeyboardEvent('keydown',{key:'Tab',cancelable:true});check(UX.moveTableCell(event,cells[0],document.querySelector('#table')));check(document.activeElement===cells[1]);check(getSelection().toString()==='Second');});
+ test('Shift+Tab returns to the previous cell',()=>{const cells=document.querySelectorAll('.table-editor-cell');check(UX.moveTableCell(new KeyboardEvent('keydown',{key:'Tab',shiftKey:true,cancelable:true}),cells[1],document.querySelector('#table')));check(document.activeElement===cells[0]);});
+ test('Tab can leave the last cell',()=>{const cells=document.querySelectorAll('.table-editor-cell');check(!UX.moveTableCell(new KeyboardEvent('keydown',{key:'Tab'}),cells[1],document.querySelector('#table')));});
+ test('IME composition does not navigate cells',()=>{const cells=document.querySelectorAll('.table-editor-cell');check(!UX.moveTableCell(new KeyboardEvent('keydown',{key:'Tab',isComposing:true}),cells[0],document.querySelector('#table')));});
+};
+</script>
