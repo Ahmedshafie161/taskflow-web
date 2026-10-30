@@ -341,12 +341,13 @@
   function requestCanvasRender() {
     if (!canvasFrame) canvasFrame = requestAnimationFrame(() => { canvasFrame = 0; renderCanvas(); });
   }
+  const tableMediaNodes = new Map();
   const tableMediaLayer = document.createElement('div');
   tableMediaLayer.className = 'table-media-layer';
   $('.sketch-drawing-area').append(tableMediaLayer);
   function positionTableMedia() {
-    tableMediaLayer.replaceChildren();
-    if (!selectedBoard) return;
+    if (!selectedBoard) { tableMediaLayer.replaceChildren(); tableMediaNodes.clear(); return; }
+    const activeKeys = new Set();
     for (const table of elements.filter(item => item._kind === 'table' && item.cellMedia)) {
       const rows = Math.max(1, Number(table.rows)||1), cols = Math.max(1,Number(table.cols)||1);
       const heights = tableRowHeights(table);
@@ -355,20 +356,36 @@
         if (r<0 || r>=rows || c<0 || c>=cols || !Array.isArray(mediaList)) continue;
         const left = canvas.offsetLeft + imageLayout.x + (table.x + c*table.w/cols - imageLayout.bounds.minX)*imageLayout.scale;
         const top = canvas.offsetTop + imageLayout.y + (table.y + heights.slice(0,r).reduce((a,b)=>a+b,0) - imageLayout.bounds.minY)*imageLayout.scale;
-        const cell = document.createElement('div');cell.className='table-media-cell';
+        const cacheKey = `${selectedBoard.id}/${table.id}/${key}`;
+        activeKeys.add(cacheKey);
+        const signature = JSON.stringify(mediaList);
+        let cell = tableMediaNodes.get(cacheKey);
+        if (!cell || cell.dataset.signature !== signature) {
+          cell?.remove();
+          cell = document.createElement('div');cell.className='table-media-cell';
+          cell.dataset.signature = signature;
+          tableMediaNodes.set(cacheKey, cell);
+          for (const media of mediaList) {
+            if (!/^(https?:\/\/|data:image\/|firestore-media:\/\/)/i.test(media.src || '')) continue;
+            const node = document.createElement(media.kind === 'video' ? 'video' : 'img');
+            node.className='table-cell-media';
+            if (node.tagName === 'VIDEO') {node.controls=true;node.preload='metadata';node.playsInline=true;}
+            else {node.alt=media.alt||'Table image';node.loading='lazy';}
+            if (media.src.startsWith('firestore-media://')) {
+              const stored = loadedImages.get(media.src.slice('firestore-media://'.length));
+              if (stored?.src) node.src = stored.src;
+              else requestImage({uriString:media.src,mimeType:media.mimeType||'image/png'});
+            } else node.src=media.src;
+            cell.append(node);
+          }
+          tableMediaLayer.append(cell);
+        }
         cell.style.left=`${left}px`;cell.style.top=`${top}px`;
         cell.style.width=`${table.w/cols*imageLayout.scale}px`;cell.style.height=`${heights[r]*imageLayout.scale}px`;
-        for (const media of mediaList) {
-          if (!/^(https?:\/\/|data:image\/)/i.test(media.src || '')) continue;
-          const node = document.createElement(media.kind === 'video' ? 'video' : 'img');
-          node.src=media.src;node.className='table-cell-media';
-          if (node.tagName === 'VIDEO') {node.controls=true;node.preload='metadata';node.playsInline=true;}
-          else {node.alt=media.alt||'Table image';node.loading='lazy';}
-          cell.append(node);
-        }
-        tableMediaLayer.append(cell);
+        cell.hidden = tableEditor?.boardId === selectedBoard.id && tableEditor.item.id === table.id;
       }
     }
+    for (const [key, node] of tableMediaNodes) if (!activeKeys.has(key)) {node.remove();tableMediaNodes.delete(key);}
   }
   function renderCanvas(exportFullPage = false) {
     const exporting = exportFullPage === true;
@@ -407,6 +424,7 @@
     positionPendingImagePreviews();
     positionTextElementEditor();
     positionTableEditor();
+    positionTableMedia();
     if (!elements.length && !drawing) return;
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (x - b.minX * scale), dpr * (y - b.minY * scale));
     const treeNodes = new Map(elements.filter((element) => element._kind === 'treenode').map((element) => [element.id, element]));
@@ -1040,7 +1058,32 @@
       const background = tableCellBackground(item,row,col);
       if(background) cell.style.backgroundColor = background;
       cell.spellcheck = false;
-      cell.addEventListener('paste', event => { event.preventDefault(); document.execCommand('insertText', false, event.clipboardData?.getData('text/plain') || ''); });
+      cell.addEventListener('paste', event => {
+        const html = event.clipboardData?.getData('text/html') || '';
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const media = [...doc.querySelectorAll('img,video')].map(node => ({
+          kind: node.tagName === 'VIDEO' ? 'video' : 'image',
+          src: node.getAttribute('src') || node.querySelector('source')?.getAttribute('src') || '',
+          alt: node.getAttribute('alt') || ''
+        })).filter(item => /^(https?:\/\/|data:image\/)/i.test(item.src));
+        const imageFile = [...(event.clipboardData?.items || [])].find(item => item.type.startsWith('image/'))?.getAsFile();
+        if (!media.length && !imageFile) {event.preventDefault();document.execCommand('insertText',false,event.clipboardData?.getData('text/plain')||'');return;}
+        event.preventDefault();event.stopPropagation();
+        void (async () => {
+          try {
+            if (imageFile && !media.length) media.push({kind:'image',src:await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(imageFile);})});
+            for (const item of media) if (item.src.startsWith('data:')) {
+              const prepared={src:item.src};await preparePastedImage(prepared);item.src=prepared.src;item.mimeType=prepared.mimeType;
+            }
+            const cellMedia={...(state.item.cellMedia||{}),[cell.dataset.cell]:[...(state.item.cellMedia?.[cell.dataset.cell]||[]),...media]};
+            state.item={...state.item,cellMedia};state.dirty=true;
+            elements=elements.map(entry=>entry.id===state.item.id?state.item:entry);
+            state.minRowHeights[Number(cell.dataset.cell.split(',')[0])]=Math.max(state.minRowHeights[Number(cell.dataset.cell.split(',')[0])],160);
+            resizeTableRows(state);renderCanvas();clearTimeout(tableSaveTimer);tableSaveTimer=setTimeout(()=>saveTableEditor(state),300);
+            showToast('Media added inside table cell');
+          } catch(error) {notice(`Could not paste cell media: ${error.message}`);}
+        })();
+      });
       cell.addEventListener('input', () => {
         const rich = readRichEditor(cell);
         const cellText = { ...(state.item.cellText || {}), [cell.dataset.cell]: rich.text };
@@ -1681,7 +1724,7 @@
     const doc=new DOMParser().parseFromString(html,'text/html');
     doc.querySelectorAll('script,style,template').forEach(node=>node.remove());
     const hasText=Boolean(doc.body.textContent.trim()), images=doc.querySelectorAll('img,video').length;
-    return Boolean((doc.querySelector('table') && (hasText || !images)) || (images && (hasText || images>1)));
+    return Boolean(doc.querySelector('table') || (images && (hasText || images>1)));
   }
   async function preparePastedImage(block) {
     const probe=new Image();probe.src=block.src;
@@ -1841,8 +1884,7 @@
             c += cs;
           }
         });
-        if (grid.length) blocks.push({kind:'table',grid,cellBackgroundColors});
-        node.querySelectorAll('img').forEach(visit);
+        if (grid.length) blocks.push({kind:'table',grid,cellBackgroundColors,cellMedia});
         return;
       }
       if (node.tagName === 'BR') {text += '\n';return;}
@@ -1881,7 +1923,12 @@
     const origin = original ? elementBounds(original) : lastCanvasPoint || pageCenter();
     const width = Math.max(320, original?.w || 720), fontSize = Number(original?.fontSize) || 20;
     let y = origin.y;
-    try {for(const block of blocks) if(block.kind==='image') await preparePastedImage(block);} catch(error){notice(`Paste failed: ${error.message}`);return;}
+    try {for(const block of blocks) {
+      if(block.kind==='image') await preparePastedImage(block);
+      if(block.kind==='table') for(const mediaList of Object.values(block.cellMedia||{})) for(const media of mediaList) {
+        if(media.kind==='image' && media.src.startsWith('data:')) {const prepared={src:media.src};await preparePastedImage(prepared);media.src=prepared.src;media.mimeType=prepared.mimeType;}
+      }
+    }} catch(error){notice(`Paste failed: ${error.message}`);return;}
     if(selectedBoard?.id!==boardId)return;
     const added = blocks.map(block => {
       let item;
