@@ -1,5 +1,4 @@
 (() => {
-  const textUX = window.TaskflowTextUX;
   const $ = (s) => document.querySelector(s);
   const status = (message, connected = false) => {
     $('#sync-label').textContent = message;
@@ -67,10 +66,6 @@
   let draggedBoardId = null;
   let collapsedBoardIds = new Set();
   let imageLayout = { scale: 1, x: 0, y: 0, bounds: { minX: 0, minY: 0 } };
-  let pageLayoutFrame = null;
-  let awaitingInitialElements = true;
-  let documentEditor = null;
-  let documentMode = true;
   let lastSaveError = '';
 
   try { collapsedBoardIds = new Set(JSON.parse(localStorage.getItem('taskflow-sketch-collapsed-pages') || '[]')); } catch { collapsedBoardIds = new Set(); }
@@ -339,7 +334,6 @@
   }
 
   const pageExtent = document.createElement('div');
-  pageExtent.className = 'canvas-page-extent';
   pageExtent.setAttribute('aria-hidden','true');pageExtent.style.pointerEvents='none';
   canvas.before(pageExtent);canvas.style.position='absolute';
   $('.sketch-drawing-area').addEventListener('scroll',()=>requestCanvasRender(),{passive:true});
@@ -347,29 +341,49 @@
   function requestCanvasRender() {
     if (!canvasFrame) canvasFrame = requestAnimationFrame(() => { canvasFrame = 0; renderCanvas(); });
   }
+  const tableMediaLayer = document.createElement('div');
+  tableMediaLayer.className = 'table-media-layer';
+  $('.sketch-drawing-area').append(tableMediaLayer);
+  function positionTableMedia() {
+    tableMediaLayer.replaceChildren();
+    if (!selectedBoard) return;
+    for (const table of elements.filter(item => item._kind === 'table' && item.cellMedia)) {
+      const rows = Math.max(1, Number(table.rows)||1), cols = Math.max(1,Number(table.cols)||1);
+      const heights = tableRowHeights(table);
+      for (const [key, mediaList] of Object.entries(table.cellMedia)) {
+        const [r,c] = key.split(',').map(Number);
+        if (r<0 || r>=rows || c<0 || c>=cols || !Array.isArray(mediaList)) continue;
+        const left = canvas.offsetLeft + imageLayout.x + (table.x + c*table.w/cols - imageLayout.bounds.minX)*imageLayout.scale;
+        const top = canvas.offsetTop + imageLayout.y + (table.y + heights.slice(0,r).reduce((a,b)=>a+b,0) - imageLayout.bounds.minY)*imageLayout.scale;
+        const cell = document.createElement('div');cell.className='table-media-cell';
+        cell.style.left=`${left}px`;cell.style.top=`${top}px`;
+        cell.style.width=`${table.w/cols*imageLayout.scale}px`;cell.style.height=`${heights[r]*imageLayout.scale}px`;
+        for (const media of mediaList) {
+          if (!/^(https?:\/\/|data:image\/)/i.test(media.src || '')) continue;
+          const node = document.createElement(media.kind === 'video' ? 'video' : 'img');
+          node.src=media.src;node.className='table-cell-media';
+          if (node.tagName === 'VIDEO') {node.controls=true;node.preload='metadata';node.playsInline=true;}
+          else {node.alt=media.alt||'Table image';node.loading='lazy';}
+          cell.append(node);
+        }
+        tableMediaLayer.append(cell);
+      }
+    }
+  }
   function renderCanvas(exportFullPage = false) {
     const exporting = exportFullPage === true;
     if (canvasFrame) { cancelAnimationFrame(canvasFrame); canvasFrame = 0; }
     const area = $('.sketch-drawing-area');
     if (!selectedBoard) { $('#empty-sketch').hidden = false; return; }
-    if (documentMode && documentEditor) { $('#empty-sketch').hidden = true; documentEditor.refreshMedia(); return; }
     $('.sketch-drawing-area').dataset.pattern = String(selectedBoard.backgroundPattern || 'BLANK').toUpperCase();
     $('#empty-sketch').hidden = elements.length > 0 || drawing;
-    // An empty click-to-type placeholder is just a caret, not page content.
-    // Including it expands the left/top bounds and introduces scroll rounding at fit zoom.
-    const pageContent = elements.filter(item => !(item._kind === 'textbox' && item.id < 0 && !item.text));
-    const contentBounds = boundsFor([...pageContent,...[...pendingImagePreviews].filter(preview=>preview.boardId===selectedBoard.id).map(preview=>preview.item)]);
+    const b = boundsFor([...elements,...[...pendingImagePreviews].filter(preview=>preview.boardId===selectedBoard.id).map(preview=>preview.item)]);
+    const worldW = Math.max(1, b.maxX - b.minX), worldH = Math.max(1, b.maxY - b.minY);
     const scale = zoomFactor;
     let dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const layout = textUX.pageLayout(contentBounds, area.clientWidth, area.clientHeight, scale, exporting ? null : pageLayoutFrame);
-    const b = layout.bounds, rectWidth = layout.width, rectHeight = layout.height;
-    if (!exporting) {
-      const left = area.scrollLeft, top = area.scrollTop;
-      pageLayoutFrame = layout;
-      pageExtent.style.width=`${rectWidth}px`;pageExtent.style.height=`${rectHeight}px`;
-      if (layout.shiftX) area.scrollLeft = left + layout.shiftX;
-      if (layout.shiftY) area.scrollTop = top + layout.shiftY;
-    }
+    const rectWidth = Math.max(area.clientWidth, Math.ceil(worldW * scale + 60));
+    const rectHeight = Math.max(area.clientHeight, Math.ceil(worldH * scale + 60));
+    pageExtent.style.width=`${rectWidth}px`;pageExtent.style.height=`${rectHeight}px`;
     const scrollX=exporting?0:area.scrollLeft, scrollY=exporting?0:area.scrollTop;
     const visibleWidth=exporting?rectWidth:area.clientWidth, visibleHeight=exporting?rectHeight:area.clientHeight;
     canvas.style.left=`${scrollX}px`;canvas.style.top=`${scrollY}px`;
@@ -386,7 +400,7 @@
     ctx.imageSmoothingQuality = 'high';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
-    const x = layout.paddingX-scrollX, y = 30-scrollY;
+    const x = Math.max(30, (rectWidth - worldW * scale) / 2)-scrollX, y = 30-scrollY;
     imageLayout = { scale, x, y, bounds: b };
     const zoomLabel = $('#zoom-label'); if (zoomLabel) zoomLabel.textContent = `${Math.round(zoomFactor * 100)}%`;
     positionPageBodyEditor();
@@ -485,10 +499,6 @@
 
   const pendingTableDrafts = new Map();
   function setElements(next) {
-    if (awaitingInitialElements) {
-      awaitingInitialElements = false;
-      if (!elements.length && !drawing && !pageBodyEditor && !textElementEditor && !tableEditor) pageLayoutFrame = null;
-    }
     const incoming = next.map(parseElement).filter(Boolean);
     for (const draft of pendingTableDrafts.values()) {
       if(draft.boardId!==selectedBoard?.id)continue;
@@ -530,7 +540,6 @@
     }
     if (tableEditor?.boardId === selectedBoard?.id && !tableEditor.dirty) { const current = incoming.find((element) => element.id === tableEditor.item.id); if (current) tableEditor.item = current; }
     elements = incoming.sort((a, b) => a.id - b.id);
-    if(documentMode)documentEditor?.sync(selectedBoard?.id,elements);
     if (selectedBoard) selectedBoard.elementCount = elements.length;
     $('#selected-board-meta').textContent = `${elements.length} elements · ${selectedBoard?.sourceSection || selectedBoard?.sourceNotebook || 'Firebase'}`;
     renderCanvas(); buildTree();
@@ -551,8 +560,7 @@
     finally { loadingLegacy = false; }
   }
 
-  async function selectBoard(board) {
-    if (documentEditor?.hasPending() && !await documentEditor.flush()) { notice('Your document has unsaved edits. Retry saving before changing pages.'); return; }
+  function selectBoard(board) {
     closePageBodyEditor();
     closeTextElementEditor();
     closeTableEditor();
@@ -560,11 +568,7 @@
     if (contentListener) contentListener();
     selectedBoard = board;
     zoomFactor = 1;
-    pageLayoutFrame = null;
-    awaitingInitialElements = true;
-    $('.sketch-drawing-area').scrollTo({ left: 0, top: 0 });
     elements = [];
-    documentEditor?.sync(board.id,[]);
     for (const image of loadedImages.values()) if (image instanceof Image && image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
     loadedImages.clear();
     $('#selected-board-name').disabled = false;
@@ -885,13 +889,10 @@
   }
   function enableCodeFormatting(node, onLayout) {
     let timer, composing=false;
-    // Do not replace text nodes under the caret: this disrupted selection and
-    // native undo after a short pause while typing. Canvas highlighting remains.
-    const schedule=()=>{clearTimeout(timer);timer=setTimeout(()=>{if(!composing&&node.isConnected&&!node.contains(document.activeElement)&&!usingFormatToolbar(document.activeElement)){decorateCode(node);onLayout?.();}},180);};
+    const schedule=()=>{clearTimeout(timer);timer=setTimeout(()=>{if(!composing&&node.isConnected){decorateCode(node);onLayout?.();}},180);};
     node.addEventListener('compositionstart',()=>{composing=true;clearTimeout(timer);});
     node.addEventListener('compositionend',()=>{composing=false;schedule();});
     node.addEventListener('input',schedule);
-    node.addEventListener('blur',schedule);
     decorateCode(node);
   }
 
@@ -941,18 +942,15 @@
   }
 
   function rememberTextSelection() {
-    const captured = textUX.captureSelection();
-    if (captured) savedTextSelection = captured;
+    const selected = window.getSelection();
+    if (!selected?.rangeCount) return;
+    const range = selected.getRangeAt(0), element = range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+    const node = element?.closest('.page-body-editor,.table-editor-cell');
+    if (node && node.contains(range.startContainer) && node.contains(range.endContainer)) savedTextSelection = { node, range: range.cloneRange() };
   }
   document.addEventListener('selectionchange', rememberTextSelection);
   $('.sketch-ribbon-shell').addEventListener('pointerdown', rememberTextSelection, true);
-  function usingFormatToolbar(target) { return Boolean(target?.closest?.('.sketch-ribbon-shell,.sketch-quickbar,.editor-quick-actions')); }
-  function nativeTextCommand(command) {
-    const saved = textUX.captureSelection() || savedTextSelection;
-    if (!textUX.restoreSelection(saved)) return false;
-    document.execCommand(command); rememberTextSelection();
-    return true;
-  }
+  function usingFormatToolbar(target) { return Boolean(target?.closest?.('.sketch-ribbon-shell')); }
 
   function drawRichText(text, runs, x, y, width, fontSize, family, lineHeight) {
     let cursor = 0, line = 0, offset = 0;
@@ -1042,7 +1040,7 @@
       const background = tableCellBackground(item,row,col);
       if(background) cell.style.backgroundColor = background;
       cell.spellcheck = false;
-      cell.addEventListener('paste', event => { event.preventDefault(); event.stopPropagation(); textUX.insertPlainText(cell, event.clipboardData?.getData('text/plain') || ''); });
+      cell.addEventListener('paste', event => { event.preventDefault(); document.execCommand('insertText', false, event.clipboardData?.getData('text/plain') || ''); });
       cell.addEventListener('input', () => {
         const rich = readRichEditor(cell);
         const cellText = { ...(state.item.cellText || {}), [cell.dataset.cell]: rich.text };
@@ -1051,7 +1049,7 @@
         state.dirty = true; elements = elements.map((entry) => entry.id === state.item.id ? state.item : entry);
         resizeTableRows(state); clearTimeout(tableSaveTimer); tableSaveTimer = setTimeout(() => saveTableEditor(state), 500); renderCanvas();
       });
-      cell.addEventListener('keydown', (event) => { if(event.isComposing || event.keyCode===229)return; if(textUX.moveTableCell(event,cell,node))return; if (event.key === 'Escape') { event.preventDefault(); closeTableEditor(); } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); closeTableEditor(); } });
+      cell.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); closeTableEditor(); } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); closeTableEditor(); } });
       node.append(cell);
     }
     node.addEventListener('focusin',()=>{clearTimeout(tableSaveTimer);if(state.dirty)tableSaveTimer=setTimeout(()=>saveTableEditor(state),500);});
@@ -1222,7 +1220,6 @@
       queueTextElementSave(state);
     });
     editor.addEventListener('keydown', (event) => {
-      if (event.isComposing || event.keyCode === 229) return;
       if (event.key === 'Escape' || (event.key === 'Enter' && (event.metaKey || event.ctrlKey))) {
         event.preventDefault(); closeTextElementEditor(state);
       }
@@ -1243,12 +1240,10 @@
     closePageBodyEditor();
     closeTextElementEditor();
     const area = $('.sketch-drawing-area');
-    const clickedX = imageLayout.x + (worldPoint.x - imageLayout.bounds.minX) * zoomFactor;
-    const remainingWidth = (area.clientWidth - clickedX - 30) / zoomFactor;
     const item = {
       type: 'com.impactyn.taskmanager.data.entities.SketchElement.TextBox', kind: 'textbox', _kind: 'textbox',
       id: nextProvisionalTextId--, x: Number(worldPoint.x) || 0, y: Number(worldPoint.y) || 0,
-      w: Math.max(160, Math.min(1600, remainingWidth)), h: 40, text: '',
+      w: Math.max(320, Math.min(1600, (area.clientWidth - 72) / zoomFactor)), h: 40, text: '',
       fontSize: Number($('#board-font-size').value) || 20,
       fontFamily: $('#board-font-family').value || 'Arial', colorArgb: activeColor, borderWidth: 0
     };
@@ -1460,7 +1455,6 @@
         queuePageBodySave(state);
       });
       editor.addEventListener('keydown', (event) => {
-        if (event.isComposing || event.keyCode === 229) return;
         if (event.key === 'Escape') { event.preventDefault(); closePageBodyEditor(state); }
         else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); closePageBodyEditor(state); }
       });
@@ -1654,23 +1648,12 @@
     } catch (error) { elements = before; renderCanvas(); notice(`Could not format text: ${error.message}`); }
   }
   async function copySelection() {
-    const saved = textUX.captureSelection() || savedTextSelection;
-    if (saved?.node.isConnected && !saved.range.collapsed && textUX.restoreSelection(saved)) {
-      const text = window.getSelection().toString();
-      try {
-        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
-        else if (!document.execCommand('copy')) throw Error('Clipboard unavailable');
-        clipboardElements = []; clipboardPlain = '';
-        showToast('Selected text copied'); return true;
-      } catch { showToast('Clipboard access unavailable. Press Ctrl/Cmd+C to copy selected text.'); return false; }
-    }
     const picked = selectedElements();
-    if (!picked.length) { showToast('Select text or items on the page first'); return false; }
+    if (!picked.length) return showToast('Select something on the page first');
     clipboardElements = picked.map(cloneElement);
     clipboardPlain = picked.filter((el) => el._kind === 'textbox' || el._kind === 'treenode').map((el) => el.text || '').filter(Boolean).join('\n') || `${picked.length} sketch element${picked.length === 1 ? '' : 's'}`;
     try { await navigator.clipboard?.writeText(clipboardPlain); } catch { /* In-memory sketch copy still works. */ }
     showToast(`Copied ${picked.length} item${picked.length === 1 ? '' : 's'} — paste with Ctrl/Cmd+V`);
-    return true;
   }
   async function pasteElements(items = clipboardElements) {
     if (!selectedBoard) return showToast('Choose a page before pasting');
@@ -1690,18 +1673,14 @@
     } catch (error) { renderCanvas(); notice(`Paste stopped: ${error.message}`); }
   }
   function pasteText(text) {
-    if (!selectedBoard || !text) return;
-    const saved = textUX.captureSelection() || savedTextSelection;
-    if (textUX.restoreSelection(saved)) {
-      textUX.insertPlainText(saved.node,text); rememberTextSelection(); return;
-    }
-    startPageBodyEditor(pageCenter(), text, { insertText: true });
+    if (!selectedBoard || !text.trim()) return;
+    startPageBodyEditor(pageCenter(), text.trim(), { append: true });
   }
   function structuredClipboard(html) {
     if (!html) return false;
     const doc=new DOMParser().parseFromString(html,'text/html');
     doc.querySelectorAll('script,style,template').forEach(node=>node.remove());
-    const hasText=Boolean(doc.body.textContent.trim()), images=doc.querySelectorAll('img').length;
+    const hasText=Boolean(doc.body.textContent.trim()), images=doc.querySelectorAll('img,video').length;
     return Boolean((doc.querySelector('table') && (hasText || !images)) || (images && (hasText || images>1)));
   }
   async function preparePastedImage(block) {
@@ -1726,43 +1705,46 @@
     }
     return pasteImage(blob,pageCenter());
   }
-  async function pasteButtonAction({ plainText = false } = {}) {
+  async function pasteButtonAction() {
     if (!selectedBoard) return showToast('Choose a page before pasting');
-    const boardId = selectedBoard.id;
-    const target = textUX.captureSelection() || (savedTextSelection?.node.isConnected ? savedTextSelection : null);
-    const textOnly = plainText || target?.node.matches('.table-editor-cell');
-    let html = '', text = '', image = null, clipboardRead = false;
     if (navigator.clipboard?.read) {
       try {
         const clipboardItems = await navigator.clipboard.read();
-        for (const item of clipboardItems) {
-          if (!text && item.types.includes('text/plain')) text = await (await item.getType('text/plain')).text();
-          if (!html && item.types.includes('text/html')) html = await (await item.getType('text/html')).text();
-          const mime = item.types.find(type => type.startsWith('image/'));
-          if (!textOnly && !image && mime) image = await item.getType(mime);
+        for(const item of clipboardItems) if(item.types.includes('text/html')) {
+          const html=await (await item.getType('text/html')).text();
+          if(structuredClipboard(html)) return pasteTableContent(html,savedTextSelection?.node);
         }
-        clipboardRead = true;
-      } catch { /* Try the text-only API; never substitute an older internal copy. */ }
+        for (const clipboardItem of clipboardItems) {
+          const imageType=clipboardItem.types.find(type=>type.startsWith('image/'));
+          if(imageType) return pasteClipboardImage(await clipboardItem.getType(imageType));
+        }
+        for (const clipboardItem of clipboardItems) {
+          if (clipboardItem.types.includes('text/html')) {
+            const html = await (await clipboardItem.getType('text/html')).text();
+            if (/<table\b/i.test(html)) {
+              if (savedTextSelection?.node.isConnected) { savedTextSelection.node.focus({preventScroll:true}); const selection=window.getSelection(); selection.removeAllRanges(); selection.addRange(savedTextSelection.range); }
+              return pasteTableContent(html, savedTextSelection?.node);
+            }
+          }
+          const mime = clipboardItem.types.find((type) => type.startsWith('image/'));
+          if (mime) return pasteClipboardImage(await clipboardItem.getType(mime));
+          if (clipboardItem.types.includes('text/html')) {
+            const html = await (await clipboardItem.getType('text/html')).text();
+            const image = imageBlobFromHtml(html);
+            if (image) return pasteClipboardImage(image);
+          }
+        }
+      } catch (error) { console.info('Clipboard image read needs keyboard paste fallback:', error); }
     }
-    if (!clipboardRead) {
-      try {
-        if (!navigator.clipboard?.readText) throw Error('Clipboard unavailable');
-        text = await navigator.clipboard.readText(); clipboardRead = true;
-      } catch { return showToast('Clipboard access blocked. Click in the page and press Ctrl/Cmd+V.'); }
-    }
-    if (selectedBoard?.id !== boardId || (target?.node.isConnected && !textUX.restoreSelection(target))) return showToast('Paste canceled because the editing position changed. Try again.');
-    if (target && !target.node.isConnected) return showToast('Editor closed. Click where you want to paste and try again.');
-    if (target) savedTextSelection = target;
-    if (documentMode) {
-      if(!plainText&&(image||/<(?:img|table)\b/i.test(html)))return showToast('Paste images and tables in Canvas, then return to Document. Nothing was pasted.');
-      if (text) return documentEditor.pasteText(text);
-      return showToast('For image or table paste, switch to Canvas first. It will also appear in Document view.');
-    }
-    if (!textOnly && structuredClipboard(html)) return pasteTableContent(html,target?.node);
-    if (!textOnly && (image || imageBlobFromHtml(html))) return pasteClipboardImage(image || imageBlobFromHtml(html));
-    if (!target && !textOnly && text && clipboardElements.length && text === clipboardPlain) return pasteElements();
-    if (text) return pasteText(text);
-    showToast(textOnly ? 'No plain text on the clipboard. Use Paste for an image or table.' : 'Nothing supported on the clipboard. Copy text, a table, or an image first.');
+    try {
+      const text = await navigator.clipboard?.readText();
+      const image = imageBlobFromHtml(text || '');
+      if (image) return pasteClipboardImage(image);
+      if (text && clipboardElements.length && text === clipboardPlain) return pasteElements();
+      if (text?.trim()) return pasteText(text);
+    } catch (error) { console.info('Clipboard text read unavailable:', error); }
+    if (clipboardElements.length) return pasteElements();
+    showToast('Tap Paste, or press Ctrl/Cmd+V to insert the copied image');
   }
 
   function imageBlobFromHtml(html) {
@@ -1813,16 +1795,17 @@
   }
 
   function clipboardTableBlocks(html) {
-    if (!/<(?:table|img)\b/i.test(html || '')) return null;
+    if (!/<(?:table|img|video)\b/i.test(html || '')) return null;
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const backgroundOf = pastedBackgroundReader(doc);
     doc.querySelectorAll('script,style,iframe,object,embed,template').forEach(node => node.remove());
-    if (!doc.querySelector('table,img')) return null;
+    if (!doc.querySelector('table,img,video')) return null;
     const plain = node => {
       if (node.nodeType === Node.TEXT_NODE) return node.textContent;
       if (node.nodeType !== Node.ELEMENT_NODE) return '';
       if (node.tagName === 'BR') return '\n';
       if (node.tagName === 'IMG') return node.getAttribute('alt') || '';
+       if (node.tagName === 'VIDEO' || node.tagName === 'SOURCE') return ''; 
       const text = [...node.childNodes].map(plain).join('');
       return text + (/^(P|DIV|LI|H[1-6]|TR)$/.test(node.tagName) ? '\n' : '');
     };
@@ -1837,7 +1820,7 @@
         blocks.push({kind:'image',src});return;
       }
       if (node.tagName === 'TABLE') {
-        flush(); const grid = [], occupied = [], cellBackgroundColors = {};
+        flush(); const grid = [], occupied = [], cellBackgroundColors = {}, cellMedia = {};
         const rows = [...node.rows].filter(row => row.closest('table') === node);
         rows.forEach((row, r) => {
           grid[r] ||= []; occupied[r] ||= []; let c = 0;
@@ -1846,6 +1829,12 @@
             const rs = Math.min(rows.length-r, cell.rowSpan || rows.length-r), cs = Math.max(1, cell.colSpan || 1);
             if (c + cs > 100 || rows.length > 500) throw Error('This table is too large to paste at once. Copy a smaller group of rows.');
             grid[r][c] = plain(cell).replace(/\n+$/,'');
+             const media = [...cell.querySelectorAll('img,video,source')].filter(media => media.tagName !== 'SOURCE' || !media.closest('video'));
+             if (media.length) cellMedia[`${r},${c}`] = media.map(media => ({
+               kind: media.tagName === 'VIDEO' ? 'video' : 'image',
+               src: media.getAttribute('src') || media.querySelector('source')?.getAttribute('src') || '',
+               mimeType: media.getAttribute('type') || '', alt: media.getAttribute('alt') || ''
+             })).filter(media => /^(https?:\/\/|data:image\/)/i.test(media.src));
             const background = backgroundOf(cell) || backgroundOf(row) || backgroundOf(row.parentElement) || backgroundOf(node);
             if (background) for(let dr=0;dr<rs;dr++) for(let dc=0;dc<cs;dc++) cellBackgroundColors[`${r+dr},${c+dc}`] = background;
             for (let dr=0;dr<rs;dr++) for(let dc=0;dc<cs;dc++) { occupied[r+dr] ||= []; occupied[r+dr][c+dc] = true; grid[r+dr] ||= []; grid[r+dr][c+dc] ??= ''; }
@@ -1904,9 +1893,9 @@
         const w=Math.max(width,cols*90), cellText={};
         const rowHeights=block.grid.map((row,r)=>Math.max(28,...Array.from({length:cols},(_,c)=>{
           const text=String(row[c]||'');cellText[`${r},${c}`]=text;
-          return 10+16*text.split('\n').reduce((n,line)=>n+Math.max(1,Math.ceil(line.length*7/Math.max(20,w/cols-12))),0);
+          return 10+16*text.split('\n').reduce((n,line)=>n+Math.max(1,Math.ceil(line.length*7/Math.max(20,w/cols-12))),0)+(block.cellMedia?.[`${r},${c}`]?.length ? 125 : 0);
         })));
-        item={type:'com.impactyn.taskmanager.data.entities.SketchElement.Table',_kind:'table',x:origin.x,y,w,h:rowHeights.reduce((a,b)=>a+b,0),rows,cols,cellText,cellBackgroundColors:block.cellBackgroundColors,rowHeights,rowMinHeights:Array(rows).fill(28),colorArgb:original?.colorArgb ?? activeColor,strokeWidth:1};
+        item={type:'com.impactyn.taskmanager.data.entities.SketchElement.Table',_kind:'table',x:origin.x,y,w,h:rowHeights.reduce((a,b)=>a+b,0),rows,cols,cellText,cellBackgroundColors:block.cellBackgroundColors,cellMedia:block.cellMedia,rowHeights,rowMinHeights:Array(rows).fill(28),colorArgb:original?.colorArgb ?? activeColor,strokeWidth:1};
       } else {
         const lines=block.text.split('\n').reduce((n,line)=>n+Math.max(1,Math.ceil(line.length*fontSize*.6/(width-12))),0);
         item={type:'com.impactyn.taskmanager.data.entities.SketchElement.TextBox',_kind:'textbox',x:origin.x,y,w:width,h:Math.max(32,lines*(fontSize+4)+12),text:block.text,fontRuns:block.fontRuns||[],fontSize,fontFamily:original?.fontFamily||'Arial',colorArgb:original?.colorArgb ?? activeColor,borderWidth:0};
@@ -1955,8 +1944,7 @@
     const plain = clipboard?.getData('text/plain');
     if (plain != null) {
       event.preventDefault();
-      event.stopPropagation();
-      textUX.insertPlainText(editor, plain);
+      document.execCommand('insertText', false, plain);
     }
   }
 
@@ -2127,7 +2115,7 @@
       lastSaveError='';$('#save-state').textContent='Saved to shared Firebase';
     } catch(error){lastSaveError=error.message;$('#save-state').textContent='Save failed';notice(`Could not save changed elements: ${error.message}`);throw error;}
   }
-  document.querySelectorAll('[data-tool]').forEach(button=>button.addEventListener('click',async()=>{if(documentMode){if(button.dataset.tool==='TEXT')return documentEditor.focusEnd();await setDocumentMode(false);if(documentMode)return;}activeTool=button.dataset.tool;erase=activeTool==='ERASER';document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('active',b===button));canvas.style.cursor=activeTool==='SELECT'?'move':activeTool==='LASSO'?'crosshair':'crosshair';if(activeTool==='TEXT'&&selectedBoard)startPageBodyEditor(pageCenter());}));
+  document.querySelectorAll('[data-tool]').forEach(button=>button.addEventListener('click',()=>{activeTool=button.dataset.tool;erase=activeTool==='ERASER';document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('active',b===button));canvas.style.cursor=activeTool==='SELECT'?'move':activeTool==='LASSO'?'crosshair':'crosshair';if(activeTool==='TEXT'&&selectedBoard)startPageBodyEditor(pageCenter());}));
   const ribbonGroups = { draw: ['draw', 'shapes'], insert: ['insert'], format: ['format'], page: ['page'], edit: ['edit'], view: ['view'] };
   document.querySelectorAll('[data-ribbon-tab]').forEach((button) => button.addEventListener('click', () => {
     const tab = button.dataset.ribbonTab;
@@ -2156,17 +2144,9 @@
     $('#toggle-board-tree').title = allPagesCollapsed ? 'Expand all pages' : 'Collapse all pages';
     $('#toggle-board-tree').setAttribute('aria-label', allPagesCollapsed ? 'Expand all pages' : 'Collapse all pages'); buildTree();
   });
-  $('#board-copy').title='Copy selected text or objects (Ctrl/Cmd+C)';
-  $('#board-copy').addEventListener('pointerdown',event=>{rememberTextSelection();event.preventDefault();});
   $('#board-copy').addEventListener('click', copySelection);
   $('#board-paste').addEventListener('pointerdown',event=>{rememberTextSelection();event.preventDefault();});
   $('#board-paste').addEventListener('click', pasteButtonAction);
-  const pastePlainButton=document.createElement('button');
-  pastePlainButton.type='button';pastePlainButton.className='tool';pastePlainButton.textContent='Paste text';
-  pastePlainButton.title='Paste plain text at the cursor, without images or tables';
-  pastePlainButton.addEventListener('pointerdown',event=>{rememberTextSelection();event.preventDefault();});
-  pastePlainButton.addEventListener('click',()=>pasteButtonAction({plainText:true}));
-  $('#board-paste').after(pastePlainButton);
   $('#board-delete-selection').addEventListener('click', deleteSelection);
   $('#board-image-table').addEventListener('click', imageToEditableTable);
   $('#board-font-size').addEventListener('change', (event) => { event.target.value = String(Math.max(10, Math.min(96, Number(event.target.value) || 20))); formatSelectedText({ fontSize: Number(event.target.value) }); });
@@ -2179,7 +2159,6 @@
       const width = Math.max(1, bounds.maxX - bounds.minX), height = Math.max(1, bounds.maxY - bounds.minY);
       zoomFactor = Math.max(0.1, Math.min(1.4, (area.clientWidth - 60) / width, (area.clientHeight - 60) / height));
     } else zoomFactor = Math.max(0.1, Math.min(4, Number(nextZoom) || 1));
-    pageLayoutFrame = null;
     renderCanvas();
     if (fit) { area.scrollTo({ left: 0, top: 0 }); return; }
     const x = canvas.offsetLeft + imageLayout.x + (oldCenter.x - imageLayout.bounds.minX) * imageLayout.scale;
@@ -2216,17 +2195,15 @@
   $('#board-import-json').addEventListener('click',()=>$('#board-json-file').click());
   $('#board-json-file').addEventListener('change',async event=>{const file=event.target.files?.[0];event.target.value='';if(!file||!selectedBoard)return;try{const data=JSON.parse(await file.text());const incoming=Array.isArray(data)?data:data.elements;if(!Array.isArray(incoming))throw new Error('JSON must contain an elements array.');if(!confirm(`Replace this page's ${elements.length} elements with ${incoming.length} imported elements?`))return;const normalized=incoming.map((el,i)=>({...el,id:Number(el.id)||i+1,_kind:labelForType(el)}));await saveElements(normalized,elements);elements=normalized;renderCanvas();}catch(error){notice(`JSON import failed: ${error.message}`);}});
   async function replaceBoardElements(updated){const col=boardsRef.doc(selectedBoard.id).collection('elements');const old=await col.get();for(let i=0;i<old.docs.length;i+=400){const batch=db.batch();old.docs.slice(i,i+400).forEach(doc=>batch.delete(doc.ref));await batch.commit();}for(let i=0;i<updated.length;i+=400){const batch=db.batch();updated.slice(i,i+400).forEach(el=>{const item={...el};delete item._kind;batch.set(col.doc(String(item.id)),{elementJson:JSON.stringify(item),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});});await batch.commit();}}
-  for(const id of ['#board-undo','#board-redo'])$(id).addEventListener('pointerdown',event=>{rememberTextSelection();event.preventDefault();});
-  $('#board-undo').addEventListener('click',async()=>{if(nativeTextCommand('undo'))return;if(documentMode||!selectedBoard||!undoStack.length)return;redoStack.push(elements.map(el=>({...el})));elements=undoStack.pop();await replaceBoardElements(elements);renderCanvas();});
-  $('#board-redo').addEventListener('click',async()=>{if(nativeTextCommand('redo'))return;if(documentMode||!selectedBoard||!redoStack.length)return;undoStack.push(elements.map(el=>({...el})));elements=redoStack.pop();await replaceBoardElements(elements);renderCanvas();});
+  $('#board-undo').addEventListener('click',async()=>{if(!selectedBoard||!undoStack.length)return;redoStack.push(elements.map(el=>({...el})));elements=undoStack.pop();await replaceBoardElements(elements);renderCanvas();});
+  $('#board-redo').addEventListener('click',async()=>{if(!selectedBoard||!redoStack.length)return;undoStack.push(elements.map(el=>({...el})));elements=redoStack.pop();await replaceBoardElements(elements);renderCanvas();});
   $('#board-clear').addEventListener('click',async()=>{if(!selectedBoard||!elements.length)return;if(!confirm(`Clear all ${elements.length} elements from “${selectedBoard.name}”?`))return;recordUndo();elements=[];await replaceBoardElements(elements);renderCanvas();});
   window.addEventListener('keydown', async (event) => {
     if (!document.body.classList.contains('sketch-active')) return;
-    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
-    const editable = textUX.editableTarget(event.target);
+    const editable = event.target.matches?.('input,textarea,select,[contenteditable]');
     const mod = event.metaKey || event.ctrlKey;
     if (mod && event.key.toLowerCase() === 'c' && selection.size && !editable) { event.preventDefault(); copySelection(); return; }
-    if (mod && event.key.toLowerCase() === 'x' && selection.size && !editable) { event.preventDefault(); if(await copySelection())await deleteSelection(); return; }
+    if (mod && event.key.toLowerCase() === 'x' && selection.size && !editable) { event.preventDefault(); await copySelection(); await deleteSelection(); return; }
     if (mod && event.key.toLowerCase() === 'z' && !editable) {
       event.preventDefault();
       if (event.shiftKey) $('#board-redo').click(); else $('#board-undo').click();
@@ -2239,14 +2216,9 @@
       event.preventDefault(); startPageBodyEditor(pageCenter(), event.key, { insertText: true });
     }
   });
-  for(const type of ['copy','cut'])window.addEventListener(type,event=>{
-    if(textUX.editableTarget(event.target)){clipboardElements=[];clipboardPlain='';}
-  });
   window.addEventListener('paste', (event) => {
     if (!document.body.classList.contains('sketch-active') || !selectedBoard) return;
     if (event.defaultPrevented) return;
-    // Never redirect an input's clipboard image into the canvas or upload it.
-    if (textUX.editableTarget(event.target)) return;
     const tableHtml = event.clipboardData?.getData('text/html') || '';
     if(structuredClipboard(tableHtml) && !event.target.closest?.('input,textarea,select,[contenteditable]')){event.preventDefault();void pasteTableContent(tableHtml);return;}
     const clipboardItems = [...(event.clipboardData?.items || [])];
@@ -2266,50 +2238,6 @@
   });
   // Keep frequent actions reachable without opening another ribbon tab.
   const quickBar = document.createElement('div'); quickBar.className='sketch-quickbar';quickBar.setAttribute('role','toolbar');quickBar.setAttribute('aria-label','Writing and navigation');
-  const documentHost=document.createElement('div');documentHost.className='document-host';$('.sketch-drawing-area').append(documentHost);
-  documentEditor=window.TaskflowDocument.create({
-    host:documentHost, readText:readRichEditor, writeText:richEditorContent,
-    status:message=>{$('#save-state').textContent=message;},
-    openCanvas:()=>setDocumentMode(false),
-    media:item=>{
-      const source=String(item.uriString||item.imageUrl||'');
-      const key=source.startsWith('firestore-media://')?source.slice('firestore-media://'.length):source;
-      const asset=loadedImages.get(key);
-      if(asset===undefined)requestImage(item);
-      if(!asset||asset==='loading')return {failed:asset===null};
-      return {src:asset.src,tag:asset.kind==='document'?'link':asset instanceof HTMLVideoElement?'video':'img'};
-    },
-    save:async(boardId,changes)=>{
-      const collection=boardsRef.doc(boardId).collection('elements'),content=boardsRef.doc(boardId).collection('content').doc('elements');
-      if(changes.length>400)throw Error('Too many pending changes. Please save a smaller section.');
-      let saved=[];
-      await db.runTransaction(async transaction=>{
-        const snap=await transaction.get(content);
-        let nextId=Math.max(Number(snap.get('nextElementId'))||1,...(selectedBoard?.id===boardId?elements:[]).map(item=>Number(item.id)+1));
-        saved=changes.map(draft=>{const item={...draft,id:draft.id<0?nextId++:draft.id};const record={...item};delete record._kind;
-          transaction.set(collection.doc(String(item.id)),{elementJson:JSON.stringify(record),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
-          return {previousId:draft.id,item};});
-        transaction.set(content,{nextElementId:nextId,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
-      });
-      if(selectedBoard?.id===boardId){for(const {item} of saved){const index=elements.findIndex(entry=>entry.id===item.id);if(index>=0)elements[index]=item;else elements.push(item);}}
-      return saved;
-    }
-  });
-  const documentButton=document.createElement('button'),canvasButton=document.createElement('button');
-  for(const [button,label,mode] of [[documentButton,'Document',true],[canvasButton,'Canvas',false]]){button.type='button';button.className='tool document-mode-button';button.textContent=label;button.addEventListener('click',()=>setDocumentMode(mode));quickBar.append(button);}
-  async function setDocumentMode(mode) {
-    if(documentEditor.hasPending()&&!await documentEditor.flush())return;
-    const editors=[pageBodyEditor,textElementEditor,tableEditor].filter(Boolean);
-    closePageBodyEditor();closeTextElementEditor();closeTableEditor();
-    await Promise.all(editors.map(editor=>editor.savePromise).filter(Boolean));
-    if(editors.length&&lastSaveError){notice('Save the current edit successfully before switching views.');return;}
-    savedTextSelection=null;window.getSelection()?.removeAllRanges();
-    documentMode=mode;$('.sketch-drawing-area').classList.toggle('document-mode',mode);document.body.classList.toggle('notebook-document',mode);
-    documentButton.setAttribute('aria-pressed',String(mode));canvasButton.setAttribute('aria-pressed',String(!mode));
-    if(selectedBoard)documentEditor.sync(selectedBoard.id,elements);
-    renderCanvas();
-  }
-  void setDocumentMode(true);
   const quickActions=[['Type','[data-tool="TEXT"]','Click the page to type'],['Pen','[data-tool="PEN"]','Draw with a pen'],['Undo','#board-undo','Undo (Ctrl/Cmd+Z)'],['Redo','#board-redo','Redo (Ctrl/Cmd+Shift+Z)']];
   for(const [label,target,title] of quickActions){const button=document.createElement('button');button.type='button';button.className='tool';button.textContent=label;button.title=title;button.addEventListener('pointerdown',event=>event.preventDefault());button.addEventListener('click',()=>$(target).click());quickBar.append(button);}
   const toolsToggle=document.createElement('button');toolsToggle.type='button';toolsToggle.className='tool';toolsToggle.textContent='Hide tools';toolsToggle.setAttribute('aria-expanded','true');
@@ -2318,7 +2246,6 @@
   const saveStatus=$('#save-state');saveStatus.setAttribute('role','status');saveStatus.setAttribute('aria-live','polite');quickBar.append(saveStatus);
   $('.editor-heading').after(quickBar);
   const uxStyle=document.createElement('style');uxStyle.textContent=`
-    .sketch-drawing-area{overflow-anchor:none;scroll-behavior:auto;scrollbar-gutter:stable}
     .sketch-toolbar p{display:none}.sketch-toolbar{min-height:40px}.sketch-toolbar h1{font-size:16px}
     .sketch-quickbar{display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid var(--line);background:var(--surface);flex-shrink:0;overflow-x:auto}
     .sketch-quickbar .tool{min-height:34px;padding:0 12px;white-space:nowrap}.sketch-quickbar #save-state{margin-left:auto;max-width:210px;overflow:hidden;text-overflow:ellipsis}
@@ -2326,10 +2253,6 @@
     .board-search{height:39px;font-size:12px}.sketch-ribbon-tabs{height:34px}.sketch-ribbon-tabs button{font-size:11px}.sketch-ribbon .tool{min-height:34px}
     .sketch-quickbar button:focus-visible,.sketch-ribbon button:focus-visible,.board-entry:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     .sketch-ribbon-shell[hidden]{display:none!important}.editor-heading small{max-width:170px;overflow:hidden;text-overflow:ellipsis}.sketch-drawing-area{scrollbar-width:thin;scrollbar-color:var(--line) transparent}
-    .page-body-editor,.table-editor-cell{caret-color:var(--accent);tab-size:4}
-    .page-body-editor:focus{outline:1px dashed var(--accent);outline-offset:4px}
-    .table-editor-cell:focus{outline:2px solid var(--accent);outline-offset:-2px}
-    .editor-quick-actions{flex-wrap:wrap}
     @media(max-width:780px){.sketch-quickbar{padding:5px 8px;gap:4px}.sketch-quickbar .tool{padding:0 9px;min-height:36px}.sketch-quickbar #save-state{font-size:9px!important;max-width:115px}.editor-heading .board-actions{display:none}.sketch-toolbar h1{font-size:14px}}
     #sketch-view:fullscreen .sketch-quickbar{padding:3px 7px}#sketch-view:fullscreen .sketch-quickbar .tool{min-height:30px}
   `;document.head.append(uxStyle);
@@ -2339,6 +2262,80 @@
       event.preventDefault();$('.sketch-layout').classList.remove('boards-hidden');$('#toggle-board-panel').setAttribute('aria-label','Hide notebook pages');$('#board-filter').focus();$('#board-filter').select();requestCanvasRender();
     }
   });
+  // Compact canvas command bar: real actions reuse the existing zoom and page controls.
+  const canvasArea = $('.sketch-drawing-area');
+  const canvasFooter = document.createElement('div');
+  canvasFooter.className = 'canvas-commandbar';
+  canvasFooter.setAttribute('role', 'toolbar');
+  canvasFooter.setAttribute('aria-label', 'Canvas navigation and appearance');
+  canvasFooter.innerHTML = `<div class="canvas-commandbar-left"><span class="canvas-presence-dot" aria-hidden="true"></span><span id="canvas-context-label">Ready to create</span><span class="canvas-commandbar-hint">Ctrl/⌘ + wheel to zoom</span></div><div class="canvas-commandbar-actions"><button type="button" data-canvas-action="grid" aria-pressed="false" title="Toggle grid background">▦ Grid</button><span class="canvas-commandbar-divider" aria-hidden="true"></span><button type="button" data-canvas-action="out" aria-label="Zoom out">−</button><button type="button" data-canvas-action="reset" id="canvas-zoom-percent" title="Reset zoom to 100%">100%</button><button type="button" data-canvas-action="in" aria-label="Zoom in">+</button><button type="button" data-canvas-action="fit" title="Fit all content into view">Fit page</button></div>`;
+  canvasArea.after(canvasFooter);
+  const canvasContextLabel = canvasFooter.querySelector('#canvas-context-label');
+  const footerZoom = canvasFooter.querySelector('#canvas-zoom-percent');
+  function updateCanvasFooter() {
+    footerZoom.textContent = `${Math.round(zoomFactor * 100)}%`;
+    canvasContextLabel.textContent = selectedBoard ? `${elements.length} objects · ${activeTool.toLowerCase()} mode` : 'Choose a notebook page';
+    canvasFooter.querySelector('[data-canvas-action="grid"]').setAttribute('aria-pressed', String(String(selectedBoard?.backgroundPattern || 'BLANK').toUpperCase() === 'GRID'));
+  }
+  canvasFooter.addEventListener('click', event => {
+    const action = event.target.closest('[data-canvas-action]')?.dataset.canvasAction;
+    if (!action) return;
+    if (action === 'grid') {
+      if (!selectedBoard) return showToast('Choose a page first');
+      $('#board-background').value = String(selectedBoard.backgroundPattern || 'BLANK').toUpperCase() === 'GRID' ? 'BLANK' : 'GRID';
+      $('#board-background').dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (action === 'out') $('#zoom-out').click();
+    else if (action === 'in') $('#zoom-in').click();
+    else if (action === 'reset') $('#zoom-label').click();
+    else if (action === 'fit') $('#zoom-fit').click();
+    updateCanvasFooter();
+  });
+  canvasArea.addEventListener('wheel', event => {
+    if (!(event.ctrlKey || event.metaKey) || !selectedBoard) return;
+    event.preventDefault();
+    updateZoom(zoomFactor + (event.deltaY < 0 ? .1 : -.1));
+    updateCanvasFooter();
+  }, { passive: false });
+  document.addEventListener('keydown', event => {
+    if (!document.body.classList.contains('sketch-active') || !selectedBoard || !(event.ctrlKey || event.metaKey)) return;
+    if (event.target.closest?.('input,textarea,select,[contenteditable]')) return;
+    if (event.key === '0') { event.preventDefault(); updateZoom(1); }
+    else if (event.key === '=' || event.key === '+') { event.preventDefault(); updateZoom(zoomFactor + .1); }
+    else if (event.key === '-') { event.preventDefault(); updateZoom(zoomFactor - .1); }
+    else return;
+    updateCanvasFooter();
+  });
+  const footerObserver = new MutationObserver(updateCanvasFooter);
+  footerObserver.observe($('#zoom-label'), { childList: true, characterData: true, subtree: true });
+  window.addEventListener('taskflow:sketches-open', updateCanvasFooter);
+  document.querySelectorAll('[data-tool]').forEach(button => button.addEventListener('click', updateCanvasFooter));
+  const canvasUxStyle = document.createElement('style');
+  canvasUxStyle.textContent = `
+    .sketch-active #sketch-view{--canvas-control-shadow:0 2px 8px rgba(20,24,45,.07)}
+    .sketch-active .editor-panel{border-radius:16px;border-color:var(--line);box-shadow:0 12px 36px rgba(24,28,50,.07)}
+    .sketch-active .board-panel{border-radius:16px}
+    .sketch-active .editor-heading{background:var(--surface);border-bottom:1px solid var(--line)}
+    .sketch-active .sketch-drawing-area{background:color-mix(in srgb,var(--bg) 82%,var(--surface));scrollbar-gutter:stable;position:relative}
+    .sketch-active .sketch-drawing-area canvas{box-shadow:0 1px 2px rgba(0,0,0,.08),0 14px 38px rgba(0,0,0,.10)}
+    .sketch-active .sketch-quickbar .tool,.sketch-active .sketch-ribbon .tool{transition:background .16s,border-color .16s,transform .16s}
+    .sketch-active .sketch-quickbar .tool:hover,.sketch-active .sketch-ribbon button.tool:hover{border-color:var(--accent);background:var(--accent-soft)}
+    .sketch-active .sketch-quickbar .tool:active,.sketch-active .sketch-ribbon button.tool:active{transform:scale(.97)}
+    .canvas-commandbar{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:43px;padding:5px 13px;border-top:1px solid var(--line);background:var(--surface);color:var(--muted);font-size:11px;flex-shrink:0}
+    .canvas-commandbar-left,.canvas-commandbar-actions{display:flex;align-items:center;gap:9px;min-width:0}
+    .canvas-commandbar-left{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.canvas-commandbar-hint{opacity:.72}
+    .canvas-presence-dot{width:7px;height:7px;border-radius:50%;background:var(--green);flex-shrink:0}
+    .canvas-commandbar-actions{gap:3px;flex-shrink:0}.canvas-commandbar-actions button{height:30px;min-width:30px;padding:0 9px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--ink);font:600 11px 'DM Sans',sans-serif;cursor:pointer}
+    .canvas-commandbar-actions button:hover,.canvas-commandbar-actions button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
+    .canvas-commandbar-actions button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+    .canvas-commandbar-divider{height:18px;width:1px;background:var(--line);margin:0 5px}
+    .table-editor{border-radius:9px;box-shadow:0 8px 28px rgba(25,28,50,.16)}
+    .table-editor-cell{transition:background .15s,box-shadow .15s}.table-editor-cell:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+    @media(max-width:780px){.canvas-commandbar{padding:4px 7px;gap:4px}.canvas-commandbar-hint{display:none}.canvas-commandbar-actions button{padding:0 6px;min-width:27px}.canvas-commandbar-left{font-size:10px}}
+    @media(max-width:390px){.canvas-commandbar-actions [data-canvas-action="grid"]{display:none}.canvas-commandbar{min-height:39px}}
+    @media(prefers-reduced-motion:reduce){.sketch-active .sketch-quickbar .tool,.sketch-active .sketch-ribbon .tool,.table-editor-cell{transition:none}}
+  `;
+  document.head.append(canvasUxStyle);
+  updateCanvasFooter();
   $('#save-sketch').addEventListener('click', () => showToast(lastSaveError ? `Save failed: ${lastSaveError}` : 'Sketches save as you draw'));
   new ResizeObserver(requestCanvasRender).observe($('.sketch-drawing-area'));
   new MutationObserver(renderCanvas).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
