@@ -645,6 +645,7 @@
     if (contentListener) contentListener();
     if (selectedBoard) boardZoom.set(selectedBoard.id, zoomFactor);
     selectedBoard = board;
+    if (matchMedia('(max-width:780px)').matches) setBoardPanelOpen(false);
     boardZoomReady = false;
     zoomFactor = boardZoom.get(board.id) ?? 1;
     $('.sketch-drawing-area').scrollTo({ left: 0, top: 0 });
@@ -2239,12 +2240,15 @@
   }));
   let pageSearchTimer;
   $('#board-filter').addEventListener('input', () => { clearTimeout(pageSearchTimer); pageSearchTimer=setTimeout(buildTree,120); });
-  $('#toggle-board-panel').addEventListener('click', () => {
-    const layout = $('.sketch-layout'); layout.classList.toggle('boards-hidden');
-    const open = !layout.classList.contains('boards-hidden');
-    $('#toggle-board-panel').setAttribute('aria-label', open ? 'Hide notebook pages' : 'Show notebook pages');
-    $('#toggle-board-panel').title = open ? 'Hide notebook pages' : 'Show notebook pages'; renderCanvas();
-  });
+  function setBoardPanelOpen(open) {
+    $('.sketch-layout').classList.toggle('boards-hidden', !open);
+    const label = open ? 'Hide notebook pages' : 'Show notebook pages';
+    $('#toggle-board-panel').setAttribute('aria-label', label);
+    $('#toggle-board-panel').title = label;
+    requestCanvasRender();
+  }
+  $('#toggle-board-panel').addEventListener('click', () => setBoardPanelOpen($('.sketch-layout').classList.contains('boards-hidden')));
+  $('#board-panel-close').addEventListener('click', () => setBoardPanelOpen(false));
   let allPagesCollapsed = false;
   $('#toggle-board-tree').addEventListener('click', () => {
     allPagesCollapsed = !allPagesCollapsed;
@@ -2499,6 +2503,6 @@
   $('#save-sketch').addEventListener('click', () => showToast(lastSaveError ? `Save failed: ${lastSaveError}` : 'Sketches save as you draw'));
   new ResizeObserver(requestCanvasRender).observe($('.sketch-drawing-area'));
   new MutationObserver(renderCanvas).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-  window.addEventListener('taskflow:sketches-open', () => { renderCanvas(); renderPageDocuments(); });
+  window.addEventListener('taskflow:sketches-open', () => { setBoardPanelOpen(!$('.sketch-layout').classList.contains('boards-hidden')); renderCanvas(); renderPageDocuments(); });
   window.addEventListener('resize', requestCanvasRender);
 })();
