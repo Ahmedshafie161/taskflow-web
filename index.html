@@ -109,10 +109,19 @@ html:not([data-theme="dark"]) .sketch-active .sync-state,
 html:not([data-theme="dark"]) .sketch-active #selected-board-meta,
 html:not([data-theme="dark"]) .sketch-active #save-state{color:#526079!important}
 html:not([data-theme="dark"]) .sketch-active .firebase-warning{color:#5146a2;background:#f1f0fc;border:1px solid #e5e2fb}
-html:not([data-theme="dark"]) .sketch-active .page-documents{background:#fff}
-html:not([data-theme="dark"]) .sketch-active .page-documents summary{color:#35405a}
 #board-panel-close{display:none}
 @media(max-width:780px){#board-panel-close{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);font-size:18px;cursor:pointer}}
+.sketch-a4-sheet{display:none;position:absolute;pointer-events:none;background:#fff;box-shadow:0 0 0 1px #ccd2dc,0 16px 42px rgba(30,42,70,.18)}
+.sketch-active .editor-panel.document-view .sketch-a4-sheet{display:block}
+.sketch-active .editor-panel.document-view .sketch-drawing-area{background:#e4e8ef}
+.sketch-active .editor-panel.document-view .sketch-drawing-area canvas{background:transparent!important;box-shadow:none!important;z-index:1}
+.sketch-active .editor-panel.document-view .page-body-editor,
+.sketch-active .editor-panel.document-view .canvas-text-editor{background:#fff;color:#202638}
+.sketch-ribbon[data-ribbon="document"]{min-height:43px}
+.page-document-count{font-size:11px;color:var(--muted);white-space:nowrap}
+.page-document-list{display:flex;align-items:center;gap:6px;overflow-x:auto;max-width:min(70vw,620px)}
+.page-document{border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);padding:6px 9px;cursor:pointer;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis}
+.page-document:hover{border-color:var(--accent)}
 </style>
 <style id="animated-canvas-media">
 .floating-media-layer{position:absolute;inset:0;pointer-events:none;z-index:3}
@@ -161,7 +170,7 @@ html:not([data-theme="dark"]) .sketch-active .page-documents summary{color:#3540
           <section class="editor-panel"><header class="editor-heading"><button class="board-panel-toggle" id="toggle-board-panel" type="button" aria-label="Show notebook pages" title="Show notebook pages">☰</button><input class="board-name-input" id="selected-board-name" value="Select a sketch" aria-label="Selected sketch name" disabled><small id="selected-board-meta">Pages and hierarchy stay linked</small><span class="editor-quick-actions"><button class="tool" id="board-copy" type="button" title="Copy selected elements (Ctrl/Cmd+C)">▢ Copy</button><button class="tool" id="board-paste" type="button" title="Paste elements or clipboard text (Ctrl/Cmd+V)">▣ Paste</button></span><span class="board-actions"><button id="rename-board" title="Rename board" aria-label="Rename board">✎</button><button id="delete-board" title="Delete board" aria-label="Delete board">⌫</button></span></header>
             <div class="sketch-ribbon-shell">
               <div class="sketch-ribbon-tabs" role="tablist" aria-label="Sketch ribbon">
-                <button class="active" type="button" role="tab" aria-selected="true" data-ribbon-tab="draw">Draw</button><button type="button" role="tab" aria-selected="false" data-ribbon-tab="insert">Insert</button><button type="button" role="tab" aria-selected="false" data-ribbon-tab="format">Format</button><button type="button" role="tab" aria-selected="false" data-ribbon-tab="page">Page</button><button type="button" role="tab" aria-selected="false" data-ribbon-tab="edit">Edit</button><button type="button" role="tab" aria-selected="false" data-ribbon-tab="view">View</button>
+                <button class="active" type="button" role="tab" aria-selected="true" data-ribbon-tab="draw">Draw</button><button type="button" role="tab" aria-selected="false" data-ribbon-tab="document">Document</button><button type="button" role="tab" aria-selected="false" data-ribbon-tab="insert">Insert</button><button type="button" role="tab" aria-selected="false" data-ribbon-tab="format">Format</button><button type="button" role="tab" aria-selected="false" data-ribbon-tab="page">Page</button><button type="button" role="tab" aria-selected="false" data-ribbon-tab="edit">Edit</button><button type="button" role="tab" aria-selected="false" data-ribbon-tab="view">View</button>
               </div>
               <div class="sketch-ribbon" role="toolbar" aria-label="Sketch tools" data-ribbon="draw">
                 <div class="ribbon-group" data-ribbon-group="draw"><span class="ribbon-label">Write</span><button class="tool" data-tool="TEXT" title="Click anywhere on the page to type">T Type</button><button class="tool active" data-tool="SELECT" title="Click a blank page area to type; select or move existing items">↖ Select</button><button class="tool" data-tool="PEN" title="Pen">✎ Pen</button><button class="tool" data-tool="HIGHLIGHTER" title="Highlighter">▰ Marker</button><button class="tool" data-tool="ERASER" title="Eraser">◌ Erase</button><button class="tool" data-tool="LASSO" title="Lasso select">⬚ Lasso</button></div>
@@ -171,6 +180,7 @@ html:not([data-theme="dark"]) .sketch-active .page-documents summary{color:#3540
                 <div class="ribbon-group" data-ribbon-group="page" hidden><span class="ribbon-label">Page background</span><select class="tool" id="board-background" aria-label="Page background"><option value="BLANK">Blank</option><option value="GRID">Grid</option><option value="DOTTED">Dotted</option><option value="LINED">Lined</option></select></div>
                 <div class="ribbon-group" data-ribbon-group="edit" hidden><span class="ribbon-label">Edit page</span><button class="tool" id="board-undo" title="Undo (Ctrl/Cmd+Z)">↶ Undo</button><button class="tool" id="board-redo" title="Redo (Ctrl/Cmd+Y)">↷ Redo</button><button class="tool" id="board-delete-selection" title="Delete selected text or objects (Delete/Backspace)">⌫ Delete selection</button><button class="tool" id="board-image-table" title="Overlay an editable table on a selected table image">▦ Make image editable</button><button class="tool" id="board-search">⌕ Find</button><button class="tool" id="board-export" title="Export image">⇧ PNG</button><button class="tool" id="board-export-json">⇧ JSON</button><button class="tool" id="board-import-json">⇩ Import</button><button class="tool" id="board-clear">⌫ Clear</button><input id="board-json-file" type="file" accept="application/json,.json" hidden></div>
                 <div class="ribbon-group" data-ribbon-group="view" hidden><span class="ribbon-label">Zoom &amp; sync</span><button class="tool" id="zoom-out" title="Zoom out">−</button><button class="tool" id="zoom-label" title="Reset zoom">100%</button><button class="tool" id="zoom-in" title="Zoom in">＋</button><button class="tool" id="zoom-fit" title="Fit page">Fit</button><button class="tool" id="save-sketch" title="Save status">✓ Synced</button><span id="save-state" style="font-size:10px;color:var(--muted);white-space:nowrap">Live sync ready</span></div>
+                <div class="ribbon-group" data-ribbon-group="document" hidden><span class="ribbon-label">A4 page · 210 × 297 mm</span><span class="page-document-count">0 files</span><div class="page-document-list"></div></div>
               </div>
             </div>
             <div class="sketch-drawing-area"><canvas id="board-canvas" tabindex="0" aria-label="Notebook page. Click anywhere to type, or select Pen to draw."></canvas><div class="empty-sketch" id="empty-sketch">Click anywhere on this page to type.<br>Keep typing here like a normal page, or choose Pen to draw.</div></div>
@@ -370,6 +380,6 @@ html:not([data-theme="dark"]) .sketch-active .page-documents summary{color:#3540
 })();
 
   </script>
-  <script src="sketches.js?v=20261114-panel-zoom-light"></script>
+  <script src="sketches.js?v=20261114-a4-document"></script>
 </body>
 </html>

@@ -114,7 +114,7 @@
     const hex = (number >>> 0).toString(16).padStart(8, '0');
     const alpha = parseInt(hex.slice(0, 2), 16) / 255;
     let red = parseInt(hex.slice(2, 4), 16), green = parseInt(hex.slice(4, 6), 16), blue = parseInt(hex.slice(6, 8), 16);
-    if (adaptInkForDarkMode && document.documentElement.dataset.theme === 'dark' && red < 48 && green < 48 && blue < 48) red = green = blue = 245;
+    if (adaptInkForDarkMode && document.documentElement.dataset.theme === 'dark' && !$('.editor-panel').classList.contains('document-view') && red < 48 && green < 48 && blue < 48) red = green = blue = 245;
     return `rgba(${red},${green},${blue},${alpha})`;
   }
 
@@ -344,6 +344,10 @@
   const pageExtent = document.createElement('div');
   pageExtent.setAttribute('aria-hidden','true');pageExtent.style.pointerEvents='none';
   canvas.before(pageExtent);canvas.style.position='absolute';
+  const documentPaper = document.createElement('div');
+  documentPaper.className = 'sketch-a4-sheet';
+  documentPaper.setAttribute('aria-hidden', 'true');
+  canvas.before(documentPaper);
   $('.sketch-drawing-area').addEventListener('scroll',()=>requestCanvasRender(),{passive:true});
   let canvasFrame = 0;
   function requestCanvasRender() {
@@ -446,11 +450,21 @@
     $('#empty-sketch').hidden = elements.length > 0 || drawing;
     const b = boundsFor([...elements,...[...pendingImagePreviews].filter(preview=>preview.boardId===selectedBoard.id).map(preview=>preview.item)]);
     const worldW = Math.max(1, b.maxX - b.minX), worldH = Math.max(1, b.maxY - b.minY);
-    const scale = zoomFactor;
+    const documentMode = $('.editor-panel').classList.contains('document-view');
+    const paperScale = zoomFactor;
+    const scale = documentMode ? paperScale * Math.min(1, 746 / worldW) : paperScale;
     let dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const rectWidth = Math.max(area.clientWidth, Math.ceil(worldW * scale + 60));
-    const rectHeight = Math.max(area.clientHeight, Math.ceil(worldH * scale + 60));
+    const paperWidth = 794 * paperScale;
+    const paperHeight = Math.max(1123 * paperScale, worldH * scale + 48 * paperScale);
+    const rectWidth = Math.max(area.clientWidth, Math.ceil(worldW * scale + 60), documentMode ? Math.ceil(paperWidth + 60) : 0);
+    const rectHeight = Math.max(area.clientHeight, Math.ceil(worldH * scale + 60), documentMode ? Math.ceil(paperHeight + 60) : 0);
     pageExtent.style.width=`${rectWidth}px`;pageExtent.style.height=`${rectHeight}px`;
+    if (documentMode) {
+      documentPaper.style.left = `${Math.max(30, (rectWidth - paperWidth) / 2)}px`;
+      documentPaper.style.top = '30px';
+      documentPaper.style.width = `${paperWidth}px`;
+      documentPaper.style.height = `${paperHeight}px`;
+    }
     const scrollX=exporting?0:area.scrollLeft, scrollY=exporting?0:area.scrollTop;
     const visibleWidth=exporting?rectWidth:area.clientWidth, visibleHeight=exporting?rectHeight:area.clientHeight;
     canvas.style.left=`${scrollX}px`;canvas.style.top=`${scrollY}px`;
@@ -467,7 +481,8 @@
     ctx.imageSmoothingQuality = 'high';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
-    const x = Math.max(30, (rectWidth - worldW * scale) / 2)-scrollX, y = 30-scrollY;
+    const x = (documentMode ? Math.max(30, (rectWidth - paperWidth) / 2) + 24 * paperScale : Math.max(30, (rectWidth - worldW * scale) / 2)) - scrollX;
+    const y = (documentMode ? 30 + 24 * paperScale : 30) - scrollY;
     imageLayout = { scale, x, y, bounds: b };
     const zoomLabel = $('#zoom-label'); if (zoomLabel) zoomLabel.textContent = `${Math.round(zoomFactor * 100)}%`;
     positionPageBodyEditor();
@@ -2227,7 +2242,7 @@
     } catch(error){lastSaveError=error.message;$('#save-state').textContent='Save failed';notice(`Could not save changed elements: ${error.message}`);throw error;}
   }
   document.querySelectorAll('[data-tool]').forEach(button=>button.addEventListener('click',()=>{activeTool=button.dataset.tool;erase=activeTool==='ERASER';document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('active',b===button));canvas.style.cursor=activeTool==='SELECT'?'move':activeTool==='LASSO'?'crosshair':'crosshair';if(activeTool==='TEXT'&&selectedBoard)startPageBodyEditor(pageCenter());}));
-  const ribbonGroups = { draw: ['draw', 'shapes'], insert: ['insert'], format: ['format'], page: ['page'], edit: ['edit'], view: ['view'] };
+  const ribbonGroups = { draw: ['draw', 'shapes'], insert: ['insert'], format: ['format'], page: ['page'], edit: ['edit'], view: ['view'], document: ['document'] };
   document.querySelectorAll('[data-ribbon-tab]').forEach((button) => button.addEventListener('click', () => {
     const tab = button.dataset.ribbonTab;
     $('.sketch-ribbon').dataset.ribbon = tab;
@@ -2237,6 +2252,9 @@
       item.setAttribute('aria-selected', String(active));
     });
     document.querySelectorAll('[data-ribbon-group]').forEach((group) => { group.hidden = !ribbonGroups[tab].includes(group.dataset.ribbonGroup); });
+    $('.editor-panel').classList.toggle('document-view', tab === 'document');
+    $('.sketch-drawing-area').scrollTo({ left: 0, top: 0 });
+    renderCanvas();
   }));
   let pageSearchTimer;
   $('#board-filter').addEventListener('input', () => { clearTimeout(pageSearchTimer); pageSearchTimer=setTimeout(buildTree,120); });
@@ -2451,23 +2469,12 @@
   `;
   document.head.append(canvasUxStyle);
   updateCanvasFooter();
-  // File attachments remain reachable without taking space from the page canvas.
-  const documentSection = document.createElement('details');
-  documentSection.className = 'page-documents';
-  documentSection.innerHTML = '<summary>Documents <span class="page-document-count">0</span></summary><div class="page-document-list"></div>';
-  $('.canvas-commandbar').after(documentSection);
+  // Keep attached files in the Document tab, outside the sketch canvas.
+  const documentList = $('.page-document-list');
   function renderPageDocuments() {
-    const list = documentSection.querySelector('.page-document-list');
-    list.replaceChildren();
+    documentList.replaceChildren();
     const docs = elements.filter(el => el._kind === 'image' && !/^(image|video)\//.test(mediaMime(el)));
-    documentSection.hidden = !selectedBoard;
-    documentSection.querySelector('.page-document-count').textContent = String(docs.length);
-    if (!docs.length) {
-      const empty = document.createElement('span');
-      empty.className = 'page-document-empty';
-      empty.textContent = 'No documents attached to this page';
-      list.append(empty);
-    }
+    $('.page-document-count').textContent = `${docs.length} ${docs.length === 1 ? 'file' : 'files'}`;
     for (const item of docs) {
       const button = document.createElement('button');
       button.type = 'button'; button.className = 'page-document';
@@ -2494,12 +2501,9 @@
           setTimeout(() => URL.revokeObjectURL(url), 60000);
         } catch (error) { notice(`Could not open document: ${error.message}`); }
       });
-      list.append(button);
+      documentList.append(button);
     }
   }
-  const documentStyle = document.createElement('style');
-  documentStyle.textContent = `.page-documents{flex:0 0 auto;max-height:190px;overflow:auto;border-top:1px solid var(--line);background:var(--surface)}.page-documents summary{cursor:pointer;padding:8px 14px;font-size:12px;font-weight:700;color:var(--ink)}.page-document-count{margin-left:5px;color:var(--muted);font-weight:400}.page-document-list{display:flex;gap:6px;flex-wrap:wrap;padding:0 12px 10px}.page-document-empty{color:var(--muted);font-size:11px;padding:3px 2px}.page-document{border:1px solid var(--line);border-radius:8px;background:var(--surface-2);color:var(--ink);padding:7px 10px;cursor:pointer;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.page-document:hover{border-color:var(--accent)}`;
-  document.head.append(documentStyle);
   $('#save-sketch').addEventListener('click', () => showToast(lastSaveError ? `Save failed: ${lastSaveError}` : 'Sketches save as you draw'));
   new ResizeObserver(requestCanvasRender).observe($('.sketch-drawing-area'));
   new MutationObserver(renderCanvas).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
