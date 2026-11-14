@@ -42,6 +42,8 @@
   let activeTool = 'SELECT';
   let activeColor = 0xFF1B1F1C;
   let zoomFactor = 1;
+  const boardZoom = new Map();
+  let boardZoomReady = false;
   let clipboardElements = [];
   let clipboardPlain = '';
   let shapeStart = null;
@@ -80,9 +82,14 @@
 
   function mediaMime(el) {
     const explicit = String(el.mimeType || '').toLowerCase();
+    const nameHint = String(el.mediaName || el.uriString || el.imageUrl || '').split(/[?#]/)[0].toLowerCase();
+    if (nameHint.endsWith('.gif')) return 'image/gif';
     if (explicit && explicit !== 'application/octet-stream') return explicit;
     const name = String(el.mediaName || el.uriString || '').split(/[?#]/)[0].toLowerCase();
     if (name.endsWith('.gif')) return 'image/gif';
+    if (name.endsWith('.png')) return 'image/png';
+    if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
+    if (name.endsWith('.webp')) return 'image/webp';
     if (name.endsWith('.svg')) return 'image/svg+xml';
     if (name.endsWith('.pdf')) return 'application/pdf';
     if (name.endsWith('.html') || name.endsWith('.htm')) return 'text/html';
@@ -238,6 +245,7 @@
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     if (kind === 'image') {
+      // Live media is layered above this static canvas fallback.
       const src = String(el.uriString || el.imageUrl || '');
       const key = src.startsWith('firestore-media://') ? src.slice('firestore-media://'.length) : src;
       const image = loadedImages.get(key);
@@ -382,10 +390,52 @@
         }
         cell.style.left=`${left}px`;cell.style.top=`${top}px`;
         cell.style.width=`${table.w/cols*imageLayout.scale}px`;cell.style.height=`${heights[r]*imageLayout.scale}px`;
-        cell.hidden = tableEditor?.boardId === selectedBoard.id && tableEditor.item.id === table.id;
+        cell.hidden = false;
       }
     }
     for (const [key, node] of tableMediaNodes) if (!activeKeys.has(key)) {node.remove();tableMediaNodes.delete(key);}
+  }
+  // GIFs must live in the DOM: canvas drawImage captures only one animation frame.
+  // Reuse nodes across canvas redraws to avoid restarting animation or video playback.
+  const floatingMediaNodes = new Map();
+  const floatingMediaLayer = document.createElement('div');
+  floatingMediaLayer.className = 'floating-media-layer';
+  $('.sketch-drawing-area').append(floatingMediaLayer);
+  function isAnimatedMedia(item) {
+    const mime = mediaMime(item);
+    return mime === 'image/gif' || mime.startsWith('video/') || /\.(gif|mp4|webm|mov)(?:[?#]|$)/i.test(String(item.uriString || item.imageUrl || ''));
+  }
+  function positionFloatingMedia() {
+    const active = new Set();
+    if (selectedBoard) for (const item of elements) {
+      if (item._kind !== 'image' || !isAnimatedMedia(item)) continue;
+      const src = String(item.uriString || item.imageUrl || '');
+      const key = src.startsWith('firestore-media://') ? src.slice('firestore-media://'.length) : src;
+      let cached = loadedImages.get(key);
+      if (cached === undefined) { requestImage(item); continue; }
+      if (!cached || cached === 'loading' || !cached.src) continue;
+      const id = `${selectedBoard.id}/${item.id}`;
+      active.add(id);
+      const video = cached instanceof HTMLVideoElement || mediaMime(item).startsWith('video/');
+      let node = floatingMediaNodes.get(id);
+      if (!node || node.tagName !== (video ? 'VIDEO' : 'IMG') || node.dataset.source !== cached.src) {
+        node?.remove();
+        node = document.createElement(video ? 'video' : 'img');
+        node.className = 'floating-live-media';
+        node.dataset.source = cached.src;
+        if (video) { node.controls = true; node.playsInline = true; node.preload = 'metadata'; }
+        else { node.alt = item.mediaName || 'Animated GIF'; node.decoding = 'async'; }
+        node.src = cached.src;
+        floatingMediaLayer.append(node);
+        floatingMediaNodes.set(id, node);
+      }
+      const box = elementBounds(item);
+      node.style.left = `${canvas.offsetLeft + imageLayout.x + (box.x-imageLayout.bounds.minX)*imageLayout.scale}px`;
+      node.style.top = `${canvas.offsetTop + imageLayout.y + (box.y-imageLayout.bounds.minY)*imageLayout.scale}px`;
+      node.style.width = `${box.w*imageLayout.scale}px`;
+      node.style.height = `${box.h*imageLayout.scale}px`;
+    }
+    for (const [id,node] of floatingMediaNodes) if (!active.has(id)) { node.remove(); floatingMediaNodes.delete(id); }
   }
   function renderCanvas(exportFullPage = false) {
     const exporting = exportFullPage === true;
@@ -425,6 +475,7 @@
     positionTextElementEditor();
     positionTableEditor();
     positionTableMedia();
+    positionFloatingMedia();
     if (!elements.length && !drawing) return;
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (x - b.minX * scale), dpr * (y - b.minY * scale));
     const treeNodes = new Map(elements.filter((element) => element._kind === 'treenode').map((element) => [element.id, element]));
@@ -560,7 +611,15 @@
     elements = incoming.sort((a, b) => a.id - b.id);
     if (selectedBoard) selectedBoard.elementCount = elements.length;
     $('#selected-board-meta').textContent = `${elements.length} elements · ${selectedBoard?.sourceSection || selectedBoard?.sourceNotebook || 'Firebase'}`;
-    renderCanvas(); buildTree();
+    if (!boardZoomReady && selectedBoard) {
+      const area = $('.sketch-drawing-area');
+      const bounds = boundsFor(elements);
+      const width = Math.max(1, bounds.maxX - bounds.minX);
+      zoomFactor = boardZoom.get(selectedBoard.id) ?? Math.max(1.15, Math.min(1.5, (area.clientWidth - 48) / width));
+      boardZoomReady = true;
+      area.scrollTo({ left: 0, top: 0 });
+    }
+    renderCanvas(); buildTree(); renderPageDocuments();
   }
 
   async function loadLegacyContent(boardId) {
@@ -584,10 +643,14 @@
     closeTableEditor();
     if (boardListener) boardListener();
     if (contentListener) contentListener();
+    if (selectedBoard) boardZoom.set(selectedBoard.id, zoomFactor);
     selectedBoard = board;
-    zoomFactor = 1;
+    boardZoomReady = false;
+    zoomFactor = boardZoom.get(board.id) ?? 1;
+    $('.sketch-drawing-area').scrollTo({ left: 0, top: 0 });
     elements = [];
-    for (const image of loadedImages.values()) if (image instanceof Image && image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
+    renderPageDocuments();
+    for (const image of loadedImages.values()) if (image?.dataset?.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
     loadedImages.clear();
     $('#selected-board-name').disabled = false;
     $('#selected-board-name').value = board.name || 'Untitled board';
@@ -1848,7 +1911,7 @@
       if (node.nodeType !== Node.ELEMENT_NODE) return '';
       if (node.tagName === 'BR') return '\n';
       if (node.tagName === 'IMG') return node.getAttribute('alt') || '';
-       if (node.tagName === 'VIDEO' || node.tagName === 'SOURCE') return ''; 
+       if (node.tagName === 'VIDEO' || node.tagName === 'SOURCE') return '';
       const text = [...node.childNodes].map(plain).join('');
       return text + (/^(P|DIV|LI|H[1-6]|TR)$/.test(node.tagName) ? '\n' : '');
     };
@@ -2206,6 +2269,7 @@
       const width = Math.max(1, bounds.maxX - bounds.minX), height = Math.max(1, bounds.maxY - bounds.minY);
       zoomFactor = Math.max(0.1, Math.min(1.4, (area.clientWidth - 60) / width, (area.clientHeight - 60) / height));
     } else zoomFactor = Math.max(0.1, Math.min(4, Number(nextZoom) || 1));
+    if (selectedBoard) boardZoom.set(selectedBoard.id, zoomFactor);
     renderCanvas();
     if (fit) { area.scrollTo({ left: 0, top: 0 }); return; }
     const x = canvas.offsetLeft + imageLayout.x + (oldCenter.x - imageLayout.bounds.minX) * imageLayout.scale;
@@ -2383,9 +2447,58 @@
   `;
   document.head.append(canvasUxStyle);
   updateCanvasFooter();
+  // File attachments remain reachable without taking space from the page canvas.
+  const documentSection = document.createElement('details');
+  documentSection.className = 'page-documents';
+  documentSection.innerHTML = '<summary>Documents <span class="page-document-count">0</span></summary><div class="page-document-list"></div>';
+  $('.canvas-commandbar').after(documentSection);
+  function renderPageDocuments() {
+    const list = documentSection.querySelector('.page-document-list');
+    list.replaceChildren();
+    const docs = elements.filter(el => el._kind === 'image' && !/^(image|video)\//.test(mediaMime(el)));
+    documentSection.hidden = !selectedBoard;
+    documentSection.querySelector('.page-document-count').textContent = String(docs.length);
+    if (!docs.length) {
+      const empty = document.createElement('span');
+      empty.className = 'page-document-empty';
+      empty.textContent = 'No documents attached to this page';
+      list.append(empty);
+    }
+    for (const item of docs) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'page-document';
+      button.textContent = `📄 ${item.mediaName || 'Attached document'}`;
+      button.title = item.mediaName || 'Open attached document';
+      button.addEventListener('click', async () => {
+        const source = String(item.uriString || item.imageUrl || '');
+        if (/^https?:\/\//i.test(source)) { window.open(source, '_blank', 'noopener,noreferrer'); return; }
+        if (source.startsWith('supabase-media://')) {
+          const path = source.slice('supabase-media://'.length).split('/').map(part => {
+            try { return decodeURIComponent(part.replace(/\+/g, '%2B')); } catch { return part; }
+          }).map(encodeURIComponent).join('/');
+          window.open(`${supabaseUrl}/storage/v1/object/public/sketch-media/${path}`, '_blank', 'noopener,noreferrer'); return;
+        }
+        if (!source.startsWith('firestore-media://')) { notice('This document has no web-accessible file link.'); return; }
+        try {
+          const key = source.slice('firestore-media://'.length);
+          const media = await db.collection('sketchMedia').doc(key).get();
+          const chunks = await db.collection('sketchMedia').doc(key).collection('chunks').orderBy('chunkIndex').get();
+          const parts = chunks.docs.map(doc => doc.get('chunkData')?.toUint8Array()).filter(Boolean);
+          if (!parts.length) throw Error('Document data is missing');
+          const url = URL.createObjectURL(new Blob(parts, { type: media.get('mimeType') || mediaMime(item) }));
+          const link = document.createElement('a');link.href = url;link.download = item.mediaName || 'document';link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+        } catch (error) { notice(`Could not open document: ${error.message}`); }
+      });
+      list.append(button);
+    }
+  }
+  const documentStyle = document.createElement('style');
+  documentStyle.textContent = `.page-documents{flex:0 0 auto;max-height:190px;overflow:auto;border-top:1px solid var(--line);background:var(--surface)}.page-documents summary{cursor:pointer;padding:8px 14px;font-size:12px;font-weight:700;color:var(--ink)}.page-document-count{margin-left:5px;color:var(--muted);font-weight:400}.page-document-list{display:flex;gap:6px;flex-wrap:wrap;padding:0 12px 10px}.page-document-empty{color:var(--muted);font-size:11px;padding:3px 2px}.page-document{border:1px solid var(--line);border-radius:8px;background:var(--surface-2);color:var(--ink);padding:7px 10px;cursor:pointer;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.page-document:hover{border-color:var(--accent)}`;
+  document.head.append(documentStyle);
   $('#save-sketch').addEventListener('click', () => showToast(lastSaveError ? `Save failed: ${lastSaveError}` : 'Sketches save as you draw'));
   new ResizeObserver(requestCanvasRender).observe($('.sketch-drawing-area'));
   new MutationObserver(renderCanvas).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-  window.addEventListener('taskflow:sketches-open', () => { renderCanvas(); if (selectedBoard) selectBoard(selectedBoard); });
+  window.addEventListener('taskflow:sketches-open', () => { renderCanvas(); renderPageDocuments(); });
   window.addEventListener('resize', requestCanvasRender);
 })();

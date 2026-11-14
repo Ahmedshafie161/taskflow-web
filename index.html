@@ -89,6 +89,37 @@ button:disabled{cursor:not-allowed;opacity:.55}
 @media(max-width:780px){.sketch-layout{grid-template-columns:1fr;gap:8px}.board-panel{width:min(310px,88vw)}.sketch-active #sketch-view{padding:7px;gap:7px}.sketch-toolbar{min-height:40px}.editor-heading{padding:7px 9px;min-height:47px}.sketch-quickbar{padding:5px 8px!important;min-height:43px}.sketch-ribbon-tabs{padding:0 6px;height:32px}.sketch-ribbon-tabs button{padding:0 10px}.sketch-ribbon{padding:5px 7px;gap:6px}.ribbon-group{padding-right:7px}}
 @media(prefers-reduced-motion:reduce){button,.board-entry{transition:none!important}}
 </style>
+<style id="sketch-light-clarity">
+html:not([data-theme="dark"]) .sketch-active #sketch-view{background:#f2f5fa}
+html:not([data-theme="dark"]) .sketch-active .board-panel,
+html:not([data-theme="dark"]) .sketch-active .editor-panel{border-color:#dce3ed;box-shadow:0 8px 28px rgba(35,48,82,.07)}
+html:not([data-theme="dark"]) .sketch-active .board-entry{color:#35405a;font-size:13px}
+html:not([data-theme="dark"]) .sketch-active .board-entry.active{color:#4338a9;background:#eceafd}
+html:not([data-theme="dark"]) .sketch-active .board-entry .board-count{font-size:11px;color:#59647b}
+html:not([data-theme="dark"]) .sketch-active .board-search{background:#fff;border-color:#d7dfeb;font-size:13px}
+html:not([data-theme="dark"]) .sketch-active .sketch-drawing-area{background:#e8edf5}
+html:not([data-theme="dark"]) .sketch-active .sketch-drawing-area canvas{background-color:#fff;box-shadow:0 0 0 1px #d4dce8,0 8px 30px rgba(35,48,82,.11)!important}
+html:not([data-theme="dark"]) .sketch-active .sketch-ribbon-shell{background:#f8f9fd}
+html:not([data-theme="dark"]) .sketch-active .sketch-ribbon-tabs button{font-size:12px;color:#5d6880}
+html:not([data-theme="dark"]) .sketch-active .sketch-ribbon-tabs button.active{color:#4e42bd}
+html:not([data-theme="dark"]) .sketch-active .sketch-ribbon .tool,
+html:not([data-theme="dark"]) .sketch-active .sketch-quickbar .tool{font-size:12px;color:#35405a;border-color:#dce3ed}
+html:not([data-theme="dark"]) .sketch-active .sketch-ribbon .tool.active{color:#4338a9;border-color:#aaa2ec}
+html:not([data-theme="dark"]) .sketch-active .sync-state,
+html:not([data-theme="dark"]) .sketch-active #selected-board-meta,
+html:not([data-theme="dark"]) .sketch-active #save-state{color:#526079!important}
+html:not([data-theme="dark"]) .sketch-active .firebase-warning{color:#5146a2;background:#f1f0fc;border:1px solid #e5e2fb}
+html:not([data-theme="dark"]) .sketch-active .page-documents{background:#fff}
+html:not([data-theme="dark"]) .sketch-active .page-documents summary{color:#35405a}
+</style>
+<style id="animated-canvas-media">
+.floating-media-layer{position:absolute;inset:0;pointer-events:none;z-index:3}
+.floating-live-media{position:absolute;display:block;object-fit:contain;pointer-events:auto;border-radius:8px;max-width:none;max-height:none}
+.floating-live-media:not(video){pointer-events:none}
+.floating-live-media:focus-visible,.table-cell-media:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.table-media-layer{z-index:3}
+.table-editor{z-index:5}
+</style>
 <style id="table-cell-media-fix">
 .table-media-layer{position:absolute;inset:0;pointer-events:none;z-index:2}
 .table-media-cell{position:absolute;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;overflow:hidden;padding:8px;pointer-events:none}
